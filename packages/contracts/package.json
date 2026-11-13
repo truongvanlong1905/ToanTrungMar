@@ -6,7 +6,8 @@
   "types": "./src/common/index.ts",
   "exports": {
     ".": "./src/common/index.ts",
-    "./common": "./src/common/index.ts"
+    "./common": "./src/common/index.ts",
+    "./02-tracking-sync": "./src/02-tracking-sync/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

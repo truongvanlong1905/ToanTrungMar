@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Google Ads Sync Input Fixture — Module 02 Toàn Trung",
+  "description": "File mẫu đầu vào (input) dùng để cấu hình tham số đồng bộ, gửi request API hoặc chạy CLI runner",
+  "syncConfiguration": {
+    "provider": "mock",
+    "accountPropertyId": "GADS-SYNTH-MOCK-01",
+    "customerId": "1234567890",
+    "loginCustomerId": "9876543210",
+    "runType": "light",
+    "startDate": "2026-11-10",
+    "endDate": "2026-11-11",
+    "currencyCode": "VND"
+  },
+  "apiPayloadExamples": {
+    "triggerSyncPost": {
+      "endpoint": "/api/v1/tracking/sync",
+      "method": "POST",
+      "description": "Payload gửi lên API để kích hoạt phiên đồng bộ thủ công hoặc replay",
+      "headers": {
+        "Content-Type": "application/json",
+        "x-csrf-token": "<CSRF_TOKEN_FROM_SESSION>"
+      },
+      "body": {
+        "platform": "google_ads",
+        "runType": "light",
+        "forceMock": true,
+        "startDate": "2026-11-10",
+        "endDate": "2026-11-11"
+      }
+    },
+    "triggerSyncFullPost": {
+      "endpoint": "/api/v1/tracking/sync",
+      "method": "POST",
+      "description": "Payload kích hoạt đồng bộ đầy đủ 30 ngày",
+      "body": {
+        "platform": "google_ads",
+        "runType": "full",
+        "forceMock": true
+      }
+    },
+    "queryMetricsGet": {
+      "endpoint": "/api/v1/tracking/metrics",
+      "method": "GET",
+      "description": "Tham số query đọc số liệu chuẩn hóa cho Dashboard M02/M04",
+      "queryParams": {
+        "platform": "google_ads",
+        "grain": "campaign",
+        "metricDateFrom": "2026-11-01",
+        "metricDateTo": "2026-11-11",
+        "limit": 50,
+        "offset": 0
+      }
+    },
+    "queryKeywordMetricsGet": {
+      "endpoint": "/api/v1/tracking/metrics",
+      "method": "GET",
+      "description": "Tham số query đọc số liệu từ khóa cho Module 03 (SEO & Ads)",
+      "queryParams": {
+        "platform": "google_ads",
+        "grain": "keyword",
+        "metricDateFrom": "2026-11-01",
+        "metricDateTo": "2026-11-11",
+        "limit": 100
+      }
+    }
+  },
+  "mockCampaignsInput": [
+    {
+      "campaignId": "CMP-LED-INDOOR-P25",
+      "campaignName": "Chiến dịch Màn hình LED Hội trường P2.5 Q4",
+      "dailyBudgetVnd": 3500000,
+      "dailyBudgetMicros": "3500000000000",
+      "targetKeywords": [
+        {
+          "criterionId": "KW-01",
+          "text": "báo giá màn hình led hội trường p2.5",
+          "matchType": "PHRASE"
+        },
+        {
+          "criterionId": "KW-02",
+          "text": "màn hình led p2.5 trong nhà",
+          "matchType": "EXACT"
+        },
+        {
+          "criterionId": "KW-03",
+          "text": "màn hình led hội trường",
+          "matchType": "BROAD"
+        }
+      ]
+    },
+    {
+      "campaignId": "CMP-LED-OUTDOOR-P4",
+      "campaignName": "Chiến dịch Màn hình LED Ngoài trời P4/P5 Q4",
+      "dailyBudgetVnd": 5000000,
+      "dailyBudgetMicros": "5000000000000",
+      "targetKeywords": [
+        {
+          "criterionId": "KW-04",
+          "text": "màn hình led ngoài trời p4",
+          "matchType": "EXACT"
+        },
+        {
+          "criterionId": "KW-05",
+          "text": "báo giá led p5 outdoor chống nước",
+          "matchType": "PHRASE"
+        }
+      ]
+    },
+    {
+      "campaignId": "CMP-BOARD-FACTORY",
+      "campaignName": "Bảng điện tử Năng suất & An toàn Nhà máy",
+      "dailyBudgetVnd": 1500000,
+      "dailyBudgetMicros": "1500000000000",
+      "targetKeywords": [
+        {
+          "criterionId": "KW-06",
+          "text": "bảng điện tử năng suất nhà máy",
+          "matchType": "EXACT"
+        },
+        {
+          "criterionId": "KW-07",
+          "text": "bảng led an toàn lao động cổng công ty",
+          "matchType": "PHRASE"
+        }
+      ]
+    }
+  ]
+}

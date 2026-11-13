@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "M02-GADS-SYNC-01",
+  "status": "completed",
+  "modules": [
+    "02-tracking-sync"
+  ],
+  "title": "Nối Google Ads trực tiếp vào Module 2 và chuẩn hóa platform_daily_metrics",
+  "goal": "Triển khai Mock Adapter dữ liệu giả, Google Ads API Read-Only Adapter, bộ chuẩn hóa metric micros/VND vào platform_daily_metrics, worker theo lịch và Contract công bố dữ liệu cho M03/M04.",
+  "acceptanceCriteria": [
+    "Tạo IGoogleAdsClient, Mock Adapter sinh dữ liệu giả lập chiến dịch và từ khóa đúng danh mục Toàn Trung",
+    "Chuẩn hóa dữ liệu về platform_daily_metrics (micros, VND, grain campaign/keyword, isFinalized) qua upsertPlatformMetricIdempotent",
+    "Chạy lặp không duplicate bản ghi (lũy đẳng); phân biệt kết quả rỗng (success 0 bản ghi) với lỗi kết nối",
+    "Triển khai Google Ads API Read-Only Adapter dùng GAQL truy vấn chi phí, hiển thị, click, CPC, từ khóa và chuyển đổi theo chính sách Google 2026",
+    "Thiết lập worker bám sát lịch UC03: 02:00 (30 ngày), 11:00 và 17:00 (hôm nay và hôm qua) giờ Việt Nam",
+    "Công bố Contract và endpoint nội bộ để M03 và M04 truy vấn dữ liệu chuẩn hóa mà không gọi Google Ads trực tiếp",
+    "Pass toàn bộ kiểm thử tự động (typecheck, check:scope, check:docs, test:tooling, test:core và integration test mới)"
+  ],
+  "allowedSharedPaths": [
+    "packages/contracts/package.json",
+    "apps/api/src/workers/tracking-sync-cli.js",
+    "apps/web/src/app/api/v1/tracking/metrics/route.ts",
+    "apps/web/src/app/api/v1/tracking/sync/route.ts"
+  ],
+  "readWhenNeeded": [
+    "docs/modules/02-tracking-sync.md",
+    "docs/handoffs/02-tracking-sync.md",
+    "docs/API_CONTRACTS.md"
+  ],
+  "notes": "Chỉ đồng bộ số liệu nền tảng; không mở quyền sửa tay Lead (giữ mở Q02). Không lưu credential trên repo hay browser."
+}

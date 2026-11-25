@@ -456,7 +456,13 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
   const firstHandover = incomingHandovers[0] || null;
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-800 flex flex-col w-full h-screen overflow-hidden">
+    <div
+      className={
+        isFullBleed
+          ? 'h-dvh bg-[#F8FAFC] text-slate-800 flex flex-col w-full overflow-hidden'
+          : 'min-h-screen bg-[#F8FAFC] text-slate-800 flex flex-col w-full'
+      }
+    >
       <a
         href="#main-workspace-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:rounded-[10px] focus:bg-[#0B1D48] focus:px-4 focus:py-2 focus:text-xs focus:font-semibold focus:text-white focus:shadow-lg"
@@ -1198,8 +1204,8 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
         tabIndex={-1}
         className={
           isFullBleed
-            ? 'flex-1 w-full overflow-y-auto flex flex-col p-0 pb-16 md:pb-0 bg-[#F8FAFC] focus:outline-none'
-            : 'flex-1 w-full px-3 sm:px-4 lg:px-5 py-4 pb-20 md:pb-6 overflow-y-auto bg-[#F8FAFC] focus:outline-none'
+            ? 'flex-1 min-h-0 w-full overflow-y-auto flex flex-col p-0 pb-16 md:pb-0 bg-[#F8FAFC] focus:outline-none'
+            : 'flex-1 w-full px-3 sm:px-4 lg:px-5 py-4 pb-20 md:pb-8 bg-[#F8FAFC] focus:outline-none'
         }
       >
         <SectionErrorBoundary sectionTitle={currentBreadcrumb}>

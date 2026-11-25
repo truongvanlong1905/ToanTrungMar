@@ -88,7 +88,7 @@ function toJsonSafe(input) {
 
 function validateLeadIntakeByChannel(input) {
   const phone = (input.phone || '').trim();
-  if (!phone) {
+  if (!phone && input.intakeSourceProvider !== 'gmail_sync') {
     throw new IntakeValidationError('Số điện thoại liên hệ là bắt buộc.');
   }
 
@@ -104,6 +104,14 @@ function validateLeadIntakeByChannel(input) {
     if (!input.intakeSourceAccountKey || !input.externalSubmissionId) {
       throw new IntakeValidationError('Google Lead Form bắt buộc có mã tài khoản và externalSubmissionId.');
     }
+  } else if (input.intakeSourceProvider === 'gmail_sync') {
+    const email = (input.email || '').trim();
+    if (!email && !phone) {
+      throw new IntakeValidationError('Lead đồng bộ từ Gmail bắt buộc có Email hoặc Số điện thoại.');
+    }
+    if (!input.intakeSourceAccountKey || !input.externalSubmissionId) {
+      throw new IntakeValidationError('Lead đồng bộ từ Gmail bắt buộc có tài khoản Gmail và mã thư (externalSubmissionId).');
+    }
   } else if (input.intakeSourceProvider === 'manual') {
     if (!input.createdByUserId) {
       throw new IntakeValidationError('Lead tạo thủ công (Hotline/Zalo) bắt buộc ghi nhận nhân sự tạo (createdByUserId).');
@@ -113,40 +121,38 @@ function validateLeadIntakeByChannel(input) {
 
 function isUniqueConstraintError(err) {
   if (!err || typeof err !== 'object') return false;
-  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return true;
-  if (err.code === 'P2002') return true;
-  const msg = String(err.message || '');
-  return msg.includes('Unique constraint failed');
+  return (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') || err.code === 'P2002';
 }
 
 function isSqliteBusyError(err) {
   if (!err || typeof err !== 'object') return false;
-  if (err.code === 'P2028' || err.code === 'P2034') return true;
   const msg = String(err.message || '');
-  return (
-    msg.includes('SQLITE_BUSY') ||
-    msg.includes('database is locked') ||
-    msg.includes('database table is locked') ||
-    msg.includes('TransactionWriteConflict') ||
-    msg.includes('Unable to start a transaction') ||
-    msg.includes('Timed out')
-  );
+  return msg.includes('SQLITE_BUSY') || msg.includes('database is locked') || msg.includes('TransactionWriteConflict');
 }
 
-async function withConcurrencyRetry(fn, maxRetries = 12) {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (isSqliteBusyError(err) && attempt < maxRetries) {
-        attempt += 1;
-        await new Promise((r) => setTimeout(r, 25 * attempt));
-        continue;
+function withSerializedIntakeLock(fn) {
+  const prev = globalThis.__toantrungIntakeWriteQueue || Promise.resolve();
+  const next = prev.then(fn, fn);
+  globalThis.__toantrungIntakeWriteQueue = next.catch(() => undefined);
+  return next;
+}
+
+async function withConcurrencyRetry(fn, maxRetries = 8) {
+  return withSerializedIntakeLock(async () => {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (isSqliteBusyError(err) && attempt < maxRetries) {
+          attempt += 1;
+          await new Promise((r) => setTimeout(r, 15 * attempt));
+          continue;
+        }
+        throw err;
       }
-      throw err;
     }
-  }
+  });
 }
 
 async function ingestLeadWithTrackingIdempotent(client, input) {
@@ -176,7 +182,7 @@ async function ingestLeadWithTrackingIdempotent(client, input) {
     };
   };
 
-  const preCheck = await withConcurrencyRetry(() => findExisting());
+  const preCheck = await findExisting();
   if (preCheck) return preCheck;
 
   const actorType = provider === 'manual' ? 'user' : 'webhook';
@@ -186,10 +192,8 @@ async function ingestLeadWithTrackingIdempotent(client, input) {
       : `${provider}:${accountKey}`;
 
   try {
-    return await withConcurrencyRetry(async () => {
-      const existingBeforeTx = await findExisting();
-      if (existingBeforeTx) return existingBeforeTx;
-      return client.$transaction(async (tx) => {
+    return await withConcurrencyRetry(() =>
+      client.$transaction(async (tx) => {
         if (submissionId) {
           const insideTx = await tx.marketingTracking.findUnique({
             where: {
@@ -282,11 +286,11 @@ async function ingestLeadWithTrackingIdempotent(client, input) {
           tracking,
           deduplicated: false,
         };
-      }, { maxWait: 10000, timeout: 20000 });
-    });
+      }),
+    );
   } catch (err) {
     if (isUniqueConstraintError(err) && submissionId) {
-      const winner = await withConcurrencyRetry(() => findExisting());
+      const winner = await findExisting();
       if (winner) return winner;
     }
     throw err;

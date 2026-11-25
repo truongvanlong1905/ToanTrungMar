@@ -1,6 +1,6 @@
 # Database dùng chung
 
-Đọc [ERD gốc](../sources/assets/ba-erd.pdf), [từ điển ERD gốc](DATA_DICTIONARY.md) (giữ nguyên nguyên bản 9 bảng BA), [ownership](TABLE_OWNERSHIP.md) và [độ bao phủ](ERD_COVERAGE.md).
+Đọc ERD gốc (lưu cục bộ ngoài Git), [từ điển ERD gốc](DATA_DICTIONARY.md) (giữ nguyên nguyên bản 9 bảng BA), [ownership](TABLE_OWNERSHIP.md) và [độ bao phủ](ERD_COVERAGE.md).
 
 ## Kiến trúc hiện tại & phân biệt nguồn
 

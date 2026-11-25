@@ -91,6 +91,15 @@ model Lead {
   @@index([isSpam, spamAdsExclusionStatus])
   @@index([assignedSalesId, pipelineStatus])
   @@index([createdAt])
+  @@index([isSpam, createdAt, id])
+  @@index([assignedSalesId, createdAt])
+  @@index([createdByUserId])
+  @@index([sourceWebsite, createdAt])
+  @@index([receivedAt, isSpam])
+  @@index([firstQuoteSentAt, isSpam])
+  @@index([pipelineStatus, isSpam, closedAt])
+  @@index([pipelineStatus, isSpam, quoteRespondedAt, firstQuoteSentAt])
+  @@index([contactChannel, createdAt])
   @@map("leads")
 }
 
@@ -150,6 +159,8 @@ model LeadActivity {
 
   @@index([leadId, createdAt])
   @@index([actionById])
+  @@index([actionType, createdAt])
+  @@index([leadId, actionType])
   @@map("lead_activities")
 }
 

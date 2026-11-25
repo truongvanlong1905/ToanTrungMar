@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { getSessionSecret } from '../config';
 
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -31,7 +32,7 @@ export function generateSessionTokens(): {
 }
 
 export function hashSessionToken(rawToken: string): string {
-  const secret = process.env.SESSION_SECRET || 'toantrung-v2-fallback-dev-secret';
+  const secret = getSessionSecret();
   return crypto.createHmac('sha256', secret).update(rawToken).digest('hex');
 }
 

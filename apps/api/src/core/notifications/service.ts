@@ -6,6 +6,8 @@ import {
   type NotificationDto,
   type RoleCode,
 } from '@toantrung/contracts';
+import { bumpDomainRevisions, getOrComputeScopedCache } from '../cache/server-data-cache';
+import { sanitizeUntrustedReportHtml } from '../security/html-sanitizer';
 
 export type DepartmentScopeCode =
   | 'ALL'
@@ -127,9 +129,30 @@ export interface DispatchedReportItemDto {
   createdAt: string;
 }
 
+export async function countUnreadNotificationsFast(
+  userId: number,
+  roleCode?: RoleCode,
+): Promise<number> {
+  if (roleCode) {
+    const summary = await listUserNotifications(userId, roleCode, { summaryOnly: true });
+    return summary.unreadCount;
+  }
+  const res = await getOrComputeScopedCache<number>({
+    key: `notif-unread-count:${userId}`,
+    domains: ['notifications'],
+    ttlMs: 15_000,
+    compute: () =>
+      prisma.notification.count({
+        where: { userId, isRead: false },
+      }),
+  });
+  return res.data;
+}
+
 export async function listUserNotifications(
   userId: number,
   roleCode: RoleCode,
+  options?: { summaryOnly?: boolean; bypassCache?: boolean },
 ): Promise<{
   items: Array<NotificationDto & { departmentScope?: DepartmentScopeCode; departmentLabel?: string }>;
   unreadCount: number;
@@ -138,69 +161,93 @@ export async function listUserNotifications(
   canSendFullReport: boolean;
   reports: DispatchedReportItemDto[];
 }> {
-  const userDept = getDepartmentScopeForRole(roleCode);
-  const canSendFullReport = roleCode === 'BOD' || roleCode === 'ADMIN';
+  const summaryOnly = Boolean(options?.summaryOnly);
+  const cached = await getOrComputeScopedCache({
+    key: `notif-list:${userId}:${roleCode}:${summaryOnly ? 'summary' : 'full'}`,
+    domains: ['notifications'],
+    ttlMs: 15_000,
+    bypassCache: options?.bypassCache,
+    compute: async () => {
+      const userDept = getDepartmentScopeForRole(roleCode);
+      const canSendFullReport = roleCode === 'BOD' || roleCode === 'ADMIN';
 
-  const rows = await prisma.notification.findMany({
-    where: canSendFullReport ? { userId } : { userId },
-    orderBy: { createdAt: 'desc' },
-    take: 60,
-  });
+      const [rows, allReports] = await Promise.all([
+        prisma.notification.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'desc' },
+          take: summaryOnly ? 20 : 60,
+        }),
+        summaryOnly
+          ? Promise.resolve([] as DispatchedReportItemDto[])
+          : listDispatchedExecutiveReports(25, userId, roleCode),
+      ]);
 
-  const filteredItems = rows
-    .map((r) => {
-      const { cleanTitle, cleanSummary, cleanCategory } = sanitizeNotificationCopy(
-        r.title,
-        r.summary,
-        r.category,
-      );
-      const deptScope = inferNotificationDepartment(cleanCategory, cleanTitle, cleanSummary);
-      const allowed = canAccessNotificationAction(
-        roleCode,
-        r.actionUrl,
-        r.requiredPermission,
-      );
+      // C10: Gộp các thông báo chưa đọc bị trùng khóa (category + title) khi hiển thị, nhưng không tự xóa bản ghi chưa đọc trong CSDL
+      const seenUnreadKeys = new Set<string>();
+      const dedupedRows = rows.filter((r) => {
+        if (r.isRead) return true;
+        const key = `${r.category.trim().toLowerCase()}::${r.title.trim().toLowerCase()}`;
+        if (seenUnreadKeys.has(key)) return false;
+        seenUnreadKeys.add(key);
+        return true;
+      });
+
+      const filteredItems = dedupedRows
+        .map((r) => {
+          const { cleanTitle, cleanSummary, cleanCategory } = sanitizeNotificationCopy(
+            r.title,
+            r.summary,
+            r.category,
+          );
+          const deptScope = inferNotificationDepartment(cleanCategory, cleanTitle, cleanSummary);
+          const allowed = canAccessNotificationAction(
+            roleCode,
+            r.actionUrl,
+            r.requiredPermission,
+          );
+          return {
+            id: r.id,
+            title: cleanTitle,
+            summary: cleanSummary,
+            category: cleanCategory,
+            departmentScope: deptScope,
+            departmentLabel: DEPARTMENT_SCOPE_LABELS[deptScope],
+            isRead: r.isRead,
+            actionLabel: allowed ? r.actionLabel : null,
+            actionUrl: allowed ? r.actionUrl : null,
+            createdAt: r.createdAt.toISOString(),
+            readAt: r.readAt ? r.readAt.toISOString() : null,
+          };
+        })
+        .filter((item) => {
+          if (canSendFullReport) return true;
+          // Nhân sự phòng nào chỉ xem thông báo thuộc phòng đó hoặc thông báo chung từ Ban Giám đốc
+          return item.departmentScope === userDept || item.departmentScope === 'ALL';
+        });
+
+      const unreadCount = filteredItems.filter((r) => !r.isRead).length;
+      const visibleReports = allReports.filter((rpt) => {
+        if (canSendFullReport) return true;
+        if (rpt.status === 'DRAFT') return true;
+        const targets = rpt.targetDepartments || [];
+        return (
+          targets.length === 0 ||
+          targets.includes('ALL') ||
+          targets.includes(userDept)
+        );
+      });
+
       return {
-        id: r.id,
-        title: cleanTitle,
-        summary: cleanSummary,
-        category: cleanCategory,
-        departmentScope: deptScope,
-        departmentLabel: DEPARTMENT_SCOPE_LABELS[deptScope],
-        isRead: r.isRead,
-        actionLabel: allowed ? r.actionLabel : null,
-        actionUrl: allowed ? r.actionUrl : null,
-        createdAt: r.createdAt.toISOString(),
-        readAt: r.readAt ? r.readAt.toISOString() : null,
+        items: filteredItems,
+        unreadCount,
+        userDepartmentCode: userDept,
+        userDepartmentLabel: DEPARTMENT_SCOPE_LABELS[userDept],
+        canSendFullReport,
+        reports: visibleReports,
       };
-    })
-    .filter((item) => {
-      if (canSendFullReport) return true;
-      // Nhân sự phòng nào chỉ xem thông báo thuộc phòng đó hoặc thông báo chung từ Ban Giám đốc
-      return item.departmentScope === userDept || item.departmentScope === 'ALL';
-    });
-
-  const unreadCount = filteredItems.filter((r) => !r.isRead).length;
-  const allReports = await listDispatchedExecutiveReports(25, userId);
-  const visibleReports = allReports.filter((rpt) => {
-    if (canSendFullReport) return true;
-    if (rpt.status === 'DRAFT') return true;
-    const targets = rpt.targetDepartments || [];
-    return (
-      targets.length === 0 ||
-      targets.includes('ALL') ||
-      targets.includes(userDept)
-    );
+    },
   });
-
-  return {
-    items: filteredItems,
-    unreadCount,
-    userDepartmentCode: userDept,
-    userDepartmentLabel: DEPARTMENT_SCOPE_LABELS[userDept],
-    canSendFullReport,
-    reports: visibleReports,
-  };
+  return cached.data;
 }
 
 export async function markNotificationsRead(
@@ -221,7 +268,8 @@ export async function markNotificationsRead(
     });
   }
 
-  return listUserNotifications(userId, roleCode);
+  bumpDomainRevisions(['notifications'], 'mark_notifications_read');
+  return listUserNotifications(userId, roleCode, { bypassCache: true });
 }
 
 export async function createDispatchNotification(
@@ -259,7 +307,8 @@ export async function createDispatchNotification(
     : DEPARTMENT_SCOPE_LABELS[senderDept];
 
   let savedReportId: number | null = null;
-  if (input.contentHtml && input.contentHtml.trim()) {
+  const sanitizedHtml = sanitizeUntrustedReportHtml(input.contentHtml);
+  if (sanitizedHtml && sanitizedHtml.trim()) {
     const auditEntry = await prisma.auditLog.create({
       data: {
         actorUserId: userId,
@@ -269,7 +318,7 @@ export async function createDispatchNotification(
         detailsJson: JSON.stringify({
           title: input.title.trim(),
           summary: input.summary.trim(),
-          contentHtml: input.contentHtml,
+          contentHtml: sanitizedHtml,
           targetDepartments: effectiveTargetDepts,
           authorName: input.authorName || 'Điều hành Toàn Trung',
           authorRole: input.authorRole || roleCode,
@@ -279,9 +328,13 @@ export async function createDispatchNotification(
     savedReportId = auditEntry.id;
   }
 
+  const safeCustomActionUrl =
+    input.actionUrl && /^\/(?!\/)[a-zA-Z0-9/_?=&%-]*$/.test(input.actionUrl.trim())
+      ? input.actionUrl.trim()
+      : '/notifications';
   const finalActionUrl = savedReportId
     ? `/notifications?reportId=${savedReportId}`
-    : input.actionUrl || '/notifications';
+    : safeCustomActionUrl;
 
   const allActiveUsers = await prisma.user.findMany({
     where: { isActive: true, deletedAt: null },
@@ -332,7 +385,8 @@ export async function createDispatchNotification(
     })),
   });
 
-  const list = await listUserNotifications(userId, roleCode);
+  bumpDomainRevisions(['notifications', 'reports'], 'dispatch_notification');
+  const list = await listUserNotifications(userId, roleCode, { bypassCache: true });
   return {
     ...list,
     savedReportId,
@@ -353,11 +407,12 @@ export async function saveReportDraftForUser(
     reportingPeriod?: string;
   },
 ) {
+  const sanitizedDraftHtml = sanitizeUntrustedReportHtml(input.contentHtml);
   const payloadJson = JSON.stringify({
     status: 'DRAFT',
     title: input.title.trim(),
     summary: input.summary.trim(),
-    contentHtml: input.contentHtml,
+    contentHtml: sanitizedDraftHtml,
     targetDepartments: input.targetDepartments || [],
     authorName: input.authorName || 'Điều hành Toàn Trung',
     authorRole: input.authorRole || roleCode,
@@ -378,6 +433,7 @@ export async function saveReportDraftForUser(
         where: { id: existing.id },
         data: { detailsJson: payloadJson },
       });
+      bumpDomainRevisions(['notifications', 'reports'], 'save_report_draft');
       return {
         id: updated.id,
         reportCode: updated.targetId || `DRAFT-${updated.id}`,
@@ -397,6 +453,7 @@ export async function saveReportDraftForUser(
     },
   });
 
+  bumpDomainRevisions(['notifications', 'reports'], 'save_report_draft');
   return {
     id: created.id,
     reportCode: created.targetId || `DRAFT-${created.id}`,
@@ -408,6 +465,7 @@ export async function saveReportDraftForUser(
 export async function listDispatchedExecutiveReports(
   limit = 20,
   actorUserId?: number,
+  roleCode?: RoleCode,
 ): Promise<DispatchedReportItemDto[]> {
   const logs = await prisma.auditLog.findMany({
     where: {
@@ -423,7 +481,7 @@ export async function listDispatchedExecutiveReports(
     take: limit,
   });
 
-  return logs.map((l) => {
+  const mapped = logs.map((l) => {
     let parsed: {
       status?: 'DRAFT' | 'ISSUED';
       title?: string;
@@ -448,12 +506,90 @@ export async function listDispatchedExecutiveReports(
       status: isDraft ? ('DRAFT' as const) : ('ISSUED' as const),
       title: parsed.title || 'Báo cáo điều hành nội bộ',
       summary: parsed.summary || '',
-      contentHtml: parsed.contentHtml || '',
+      contentHtml: sanitizeUntrustedReportHtml(parsed.contentHtml || ''),
       targetDepartments: parsed.targetDepartments || [],
       reportingPeriod: parsed.reportingPeriod || '30 ngày gần nhất',
       authorName: parsed.authorName || l.actor?.fullName || 'Điều hành',
       authorRole: parsed.authorRole || '',
       createdAt: l.createdAt.toISOString(),
+      actorUserId: l.actorUserId,
     };
   });
+
+  if (!roleCode || roleCode === 'BOD' || roleCode === 'ADMIN') {
+    return mapped.map(({ actorUserId: _a, ...item }) => item);
+  }
+
+  const userDept = getDepartmentScopeForRole(roleCode);
+  return mapped
+    .filter((rpt) => {
+      if (rpt.status === 'DRAFT') {
+        return actorUserId ? rpt.actorUserId === actorUserId : false;
+      }
+      const targets = rpt.targetDepartments || [];
+      return (
+        targets.length === 0 ||
+        targets.includes('ALL') ||
+        targets.includes(userDept) ||
+        (actorUserId !== undefined && rpt.actorUserId === actorUserId)
+      );
+    })
+    .map(({ actorUserId: _a, ...item }) => item);
 }
+
+/**
+ * C10 — Gộp thông báo cùng sự kiện/thực thể theo khóa (userId + category + title);
+ * cập nhật thông báo chưa đọc hiện có thay vì tạo mới mỗi vòng poll / nhắc việc.
+ */
+export async function upsertActionableNotification(input: {
+  userId: number;
+  title: string;
+  summary: string;
+  category: string;
+  actionLabel?: string | null;
+  actionUrl?: string | null;
+  requiredPermission?: string | null;
+}): Promise<void> {
+  const cleanTitle = input.title.trim().slice(0, 200);
+  const cleanCategory = input.category.trim().slice(0, 80);
+  const cleanSummary = input.summary.trim().slice(0, 500);
+
+  const existingUnread = await prisma.notification.findFirst({
+    where: {
+      userId: input.userId,
+      isRead: false,
+      category: cleanCategory,
+      title: cleanTitle,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (existingUnread) {
+    await prisma.notification.update({
+      where: { id: existingUnread.id },
+      data: {
+        summary: cleanSummary,
+        actionLabel: input.actionLabel ?? existingUnread.actionLabel,
+        actionUrl: input.actionUrl ?? existingUnread.actionUrl,
+        requiredPermission: input.requiredPermission ?? existingUnread.requiredPermission,
+      },
+    });
+    bumpDomainRevisions(['notifications'], 'upsert_notification');
+    return;
+  }
+
+  await prisma.notification.create({
+    data: {
+      userId: input.userId,
+      title: cleanTitle,
+      summary: cleanSummary,
+      category: cleanCategory,
+      isRead: false,
+      actionLabel: input.actionLabel ?? null,
+      actionUrl: input.actionUrl ?? null,
+      requiredPermission: input.requiredPermission ?? null,
+    },
+  });
+  bumpDomainRevisions(['notifications'], 'create_notification');
+}
+

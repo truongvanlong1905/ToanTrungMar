@@ -71,6 +71,8 @@ model SeoArticle {
   @@index([status, scheduledPublishAt])
   @@index([targetWebsite, status])
   @@index([keywordId])
+  @@index([createdAt])
+  @@index([updatedAt])
   @@map("seo_articles")
 }
 

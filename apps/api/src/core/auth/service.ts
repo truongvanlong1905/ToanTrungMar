@@ -8,11 +8,13 @@ import type {
   DepartmentCode,
   RoleCode,
   SessionUserDto,
+  TeamDirectoryMemberDto,
   UpdateProfileDto,
   UpdateUserDto,
 } from '@toantrung/contracts';
 import { APP_CONFIG } from '../config';
 import { recordAuditLog } from '../audit';
+import { bumpDomainRevisions } from '../cache/server-data-cache';
 import { validateAndSanitizeImageBuffer } from '../storage/image-validator';
 import {
   generateSessionTokens,
@@ -44,6 +46,85 @@ function getAvatarDir(): string {
   const dir = path.join(APP_CONFIG.getStorageRoot(), 'avatars');
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+const SETTING_KEY_USER_COVERS = 'user_profile_covers_v1';
+
+interface CachedSessionRecord {
+  expiresAtMs: number;
+  sessionExpiresAtMs: number;
+  value: {
+    sessionId: string;
+    user: SessionUserDto;
+  };
+}
+
+const globalAuthMemo = globalThis as unknown as {
+  __toantrungCoverMapCache?: { expiresAt: number; data: Record<string, string> } | null;
+  __toantrungSessionCache?: Map<string, CachedSessionRecord>;
+};
+
+function getSessionCacheMap(): Map<string, CachedSessionRecord> {
+  if (!globalAuthMemo.__toantrungSessionCache) {
+    globalAuthMemo.__toantrungSessionCache = new Map<string, CachedSessionRecord>();
+  }
+  return globalAuthMemo.__toantrungSessionCache;
+}
+
+export function invalidateAuthRuntimeCaches(userId?: number): void {
+  const map = getSessionCacheMap();
+  if (typeof userId === 'number') {
+    for (const [k, v] of map.entries()) {
+      if (v.value.user.id === userId) {
+        map.delete(k);
+      }
+    }
+  } else {
+    map.clear();
+  }
+}
+
+export async function getUserCoverMap(): Promise<Record<string, string>> {
+  const cached = globalAuthMemo.__toantrungCoverMapCache;
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+  try {
+    const row = await prisma.systemSetting.findUnique({
+      where: { key: SETTING_KEY_USER_COVERS },
+    });
+    const parsed = row?.value ? (JSON.parse(row.value) as Record<string, string>) : {};
+    const out = parsed && typeof parsed === 'object' ? parsed : {};
+    globalAuthMemo.__toantrungCoverMapCache = {
+      expiresAt: Date.now() + 60_000,
+      data: out,
+    };
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export async function setUserCoverUrl(userId: number, coverUrl: string | null): Promise<void> {
+  globalAuthMemo.__toantrungCoverMapCache = null;
+  const map = await getUserCoverMap();
+  if (!coverUrl) {
+    delete map[String(userId)];
+  } else {
+    map[String(userId)] = coverUrl;
+  }
+  const value = JSON.stringify(map);
+  await prisma.systemSetting.upsert({
+    where: { key: SETTING_KEY_USER_COVERS },
+    update: { value },
+    create: { key: SETTING_KEY_USER_COVERS, value },
+  });
+  globalAuthMemo.__toantrungCoverMapCache = {
+    expiresAt: Date.now() + 60_000,
+    data: { ...map },
+  };
+  invalidateAuthRuntimeCaches(userId);
+  bumpDomainRevisions(['auth'], 'user_cover_updated');
 }
 
 export async function authenticateUser(input: {
@@ -103,6 +184,8 @@ export async function authenticateUser(input: {
     ipAddress: input.ipAddress,
   });
 
+  const coverMap = await getUserCoverMap();
+
   return {
     user: {
       id: user.id,
@@ -110,6 +193,7 @@ export async function authenticateUser(input: {
       email: user.email,
       phone: user.phone,
       avatarUrl: user.avatarUrl,
+      coverUrl: coverMap[String(user.id)] || null,
       roleCode: user.role.roleCode as RoleCode,
       roleName: user.role.roleName,
       department: user.department as DepartmentCode,
@@ -127,15 +211,31 @@ export async function resolveSessionFromToken(rawToken: string | undefined | nul
 } | null> {
   if (!rawToken) return null;
   const tokenHash = hashSessionToken(rawToken);
-  const session = await findActiveSessionByTokenHash(tokenHash);
-  if (!session) return null;
-  if (session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
+  const now = Date.now();
+  const sessionCache = getSessionCacheMap();
+  const cached = sessionCache.get(tokenHash);
+  if (cached && cached.expiresAtMs > now && cached.sessionExpiresAtMs > now) {
+    return cached.value;
+  }
+
+  const [session, coverMap] = await Promise.all([
+    findActiveSessionByTokenHash(tokenHash),
+    getUserCoverMap(),
+  ]);
+  if (!session) {
+    sessionCache.delete(tokenHash);
+    return null;
+  }
+  if (session.revokedAt || session.expiresAt.getTime() <= now) {
+    sessionCache.delete(tokenHash);
     return null;
   }
   if (!session.user.isActive || session.user.deletedAt) {
+    sessionCache.delete(tokenHash);
     return null;
   }
-  return {
+
+  const resolved = {
     sessionId: session.id,
     user: {
       id: session.user.id,
@@ -143,6 +243,7 @@ export async function resolveSessionFromToken(rawToken: string | undefined | nul
       email: session.user.email,
       phone: session.user.phone,
       avatarUrl: session.user.avatarUrl,
+      coverUrl: coverMap[String(session.user.id)] || null,
       roleCode: session.user.role.roleCode as RoleCode,
       roleName: session.user.role.roleName,
       department: session.user.department as DepartmentCode,
@@ -150,11 +251,24 @@ export async function resolveSessionFromToken(rawToken: string | undefined | nul
       csrfToken: session.csrfToken,
     },
   };
+
+  if (sessionCache.size > 500) {
+    const oldestKey = sessionCache.keys().next().value;
+    if (oldestKey !== undefined) sessionCache.delete(oldestKey);
+  }
+  sessionCache.set(tokenHash, {
+    expiresAtMs: now + 10_000,
+    sessionExpiresAtMs: session.expiresAt.getTime(),
+    value: resolved,
+  });
+
+  return resolved;
 }
 
 export async function logoutByToken(rawToken: string | undefined | null, ipAddress?: string) {
   if (!rawToken) return;
   const tokenHash = hashSessionToken(rawToken);
+  getSessionCacheMap().delete(tokenHash);
   const existing = await findActiveSessionByTokenHash(tokenHash);
   await revokeSessionByTokenHash(tokenHash);
   if (existing) {
@@ -177,11 +291,17 @@ export async function updateOwnProfile(
     where: { id: userId },
     data: {
       fullName: input.fullName.trim(),
-      phone: input.phone ? input.phone.trim() : null,
+      ...(input.phone !== undefined ? { phone: input.phone ? input.phone.trim() : null } : {}),
       ...(input.removeAvatar ? { avatarUrl: null } : {}),
     },
     include: { role: true },
   });
+
+  if (input.removeCover) {
+    await setUserCoverUrl(userId, null);
+  } else if (input.coverPreset && input.coverPreset.startsWith('preset:')) {
+    await setUserCoverUrl(userId, input.coverPreset);
+  }
 
   await recordAuditLog({
     actorUserId: userId,
@@ -192,11 +312,52 @@ export async function updateOwnProfile(
       fullName: updated.fullName,
       phone: updated.phone,
       removeAvatar: Boolean(input.removeAvatar),
+      removeCover: Boolean(input.removeCover),
+      coverPreset: input.coverPreset || null,
     },
     ipAddress,
   });
 
+  invalidateAuthRuntimeCaches(userId);
+  bumpDomainRevisions(['auth'], 'profile_updated');
   return updated;
+}
+
+export async function uploadOwnCover(input: {
+  userId: number;
+  fileBuffer: Buffer;
+  declaredMimeType: string;
+  ipAddress?: string;
+}): Promise<string> {
+  const validated = validateAndSanitizeImageBuffer(
+    input.fileBuffer,
+    input.declaredMimeType,
+    APP_CONFIG.maxHeroSizeBytes || 5 * 1024 * 1024,
+  );
+
+  const randomId = crypto.randomUUID();
+  const objectKey = `cover-${input.userId}-${randomId}-${validated.sha256.slice(0, 12)}.${validated.extension}`;
+  const fullPath = path.join(getAvatarDir(), objectKey);
+
+  fs.writeFileSync(fullPath, validated.sanitizedBuffer, { flag: 'wx' });
+
+  const coverUrl = `/api/v1/settings/branding/asset/${encodeURIComponent(objectKey)}`;
+  await setUserCoverUrl(input.userId, coverUrl);
+
+  await recordAuditLog({
+    actorUserId: input.userId,
+    action: 'PROFILE_COVER_UPDATED',
+    targetType: 'user',
+    targetId: String(input.userId),
+    details: {
+      objectKey,
+      mimeType: validated.mimeType,
+      bytes: validated.sanitizedBuffer.length,
+    },
+    ipAddress: input.ipAddress,
+  });
+
+  return coverUrl;
 }
 
 export async function uploadOwnAvatar(input: {
@@ -237,6 +398,8 @@ export async function uploadOwnAvatar(input: {
     ipAddress: input.ipAddress,
   });
 
+  invalidateAuthRuntimeCaches(input.userId);
+  bumpDomainRevisions(['auth'], 'avatar_updated');
   return updated;
 }
 
@@ -263,6 +426,7 @@ export async function changeOwnPassword(
   });
 
   await revokeAllUserSessionsExcept(userId, currentSessionId);
+  invalidateAuthRuntimeCaches(userId);
 
   await recordAuditLog({
     actorUserId: userId,
@@ -274,13 +438,14 @@ export async function changeOwnPassword(
 }
 
 export async function listAdminUsers(): Promise<AdminUserDto[]> {
-  const rows = await listAllUsersWithRoles();
+  const [rows, coverMap] = await Promise.all([listAllUsersWithRoles(), getUserCoverMap()]);
   return rows.map((u) => ({
     id: u.id,
     fullName: u.fullName,
     email: u.email,
     phone: u.phone,
     avatarUrl: u.avatarUrl,
+    coverUrl: coverMap[String(u.id)] || null,
     roleId: u.roleId,
     roleCode: u.role.roleCode as RoleCode,
     roleName: u.role.roleName,
@@ -289,6 +454,22 @@ export async function listAdminUsers(): Promise<AdminUserDto[]> {
     createdAt: u.createdAt.toISOString(),
     updatedAt: u.updatedAt.toISOString(),
   }));
+}
+
+export async function listTeamDirectoryMembers(): Promise<TeamDirectoryMemberDto[]> {
+  const [rows, coverMap] = await Promise.all([listAllUsersWithRoles(), getUserCoverMap()]);
+  return rows
+    .filter((u) => u.isActive)
+    .map((u) => ({
+      id: u.id,
+      fullName: u.fullName,
+      roleCode: u.role.roleCode as RoleCode,
+      roleName: u.role.roleName,
+      department: u.department as DepartmentCode,
+      avatarUrl: u.avatarUrl,
+      coverUrl: coverMap[String(u.id)] || null,
+      isActive: u.isActive,
+    }));
 }
 
 export async function createAdminUser(
@@ -366,6 +547,9 @@ export async function createAdminUser(
     ipAddress,
   });
 
+  invalidateAuthRuntimeCaches();
+  bumpDomainRevisions(['auth', 'leads', 'design', 'notifications'], 'admin_user_created');
+
   return {
     id: created.id,
     fullName: created.fullName,
@@ -408,29 +592,6 @@ export async function updateAdminUser(
     );
   }
 
-  // Prevent locking or demoting the last active Admin
-  if (
-    target.role.roleCode === 'ADMIN' &&
-    target.isActive &&
-    (input.isActive === false || (input.roleCode && input.roleCode !== 'ADMIN'))
-  ) {
-    const otherActiveAdmins = await prisma.user.count({
-      where: {
-        deletedAt: null,
-        isActive: true,
-        role: { roleCode: 'ADMIN' },
-        id: { not: target.id },
-      },
-    });
-    if (otherActiveAdmins < 1) {
-      throw new AuthServiceError(
-        'CANNOT_REMOVE_LAST_ADMIN',
-        'Hệ thống phải có ít nhất một Quản trị viên đang hoạt động.',
-        400,
-      );
-    }
-  }
-
   let roleId = target.roleId;
   if (input.roleCode) {
     const role = await prisma.role.findUnique({ where: { roleCode: input.roleCode } });
@@ -440,17 +601,42 @@ export async function updateAdminUser(
     roleId = role.id;
   }
 
-  const updated = await prisma.user.update({
-    where: { id: input.userId },
-    data: {
-      ...(input.fullName !== undefined ? { fullName: input.fullName.trim() } : {}),
-      ...(input.phone !== undefined ? { phone: input.phone ? input.phone.trim() : null } : {}),
-      ...(input.department !== undefined ? { department: input.department } : {}),
-      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-      ...(input.resetPassword ? { passwordHash: hashPassword(input.resetPassword) } : {}),
-      roleId,
-    },
-    include: { role: true },
+  const updated = await prisma.$transaction(async (tx) => {
+    // Prevent locking or demoting the last active Admin atomically inside transaction
+    if (
+      target.role.roleCode === 'ADMIN' &&
+      target.isActive &&
+      (input.isActive === false || (input.roleCode && input.roleCode !== 'ADMIN'))
+    ) {
+      const otherActiveAdmins = await tx.user.count({
+        where: {
+          deletedAt: null,
+          isActive: true,
+          role: { roleCode: 'ADMIN' },
+          id: { not: target.id },
+        },
+      });
+      if (otherActiveAdmins < 1) {
+        throw new AuthServiceError(
+          'CANNOT_REMOVE_LAST_ADMIN',
+          'Hệ thống phải có ít nhất một Quản trị viên đang hoạt động.',
+          400,
+        );
+      }
+    }
+
+    return tx.user.update({
+      where: { id: input.userId },
+      data: {
+        ...(input.fullName !== undefined ? { fullName: input.fullName.trim() } : {}),
+        ...(input.phone !== undefined ? { phone: input.phone ? input.phone.trim() : null } : {}),
+        ...(input.department !== undefined ? { department: input.department } : {}),
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        ...(input.resetPassword ? { passwordHash: hashPassword(input.resetPassword) } : {}),
+        roleId,
+      },
+      include: { role: true },
+    });
   });
 
   if (
@@ -460,6 +646,8 @@ export async function updateAdminUser(
   ) {
     await revokeAllUserSessionsExcept(updated.id);
   }
+  invalidateAuthRuntimeCaches(updated.id);
+  bumpDomainRevisions(['auth', 'leads', 'design'], 'admin_user_updated');
 
   await recordAuditLog({
     actorUserId,
@@ -537,10 +725,12 @@ export async function deleteAdminUser(
     }
 
     const now = new Date();
-    // Soft-delete account: preserves all related Leads, ownership references, uploaded assets, and audit logs
+    const deletedEmailSuffix = `${target.email}__deleted_${target.id}_${now.getTime()}`;
+    // Soft-delete account: preserves all related Leads, ownership references, uploaded assets, and audit logs while freeing unique email
     await tx.user.update({
       where: { id: target.id },
       data: {
+        email: deletedEmailSuffix,
         deletedAt: now,
         isActive: false,
       },
@@ -567,6 +757,9 @@ export async function deleteAdminUser(
     },
     ipAddress,
   });
+
+  invalidateAuthRuntimeCaches(deletedTarget.id);
+  bumpDomainRevisions(['auth', 'leads', 'design'], 'admin_user_deleted');
 
   return {
     deletedId: deletedTarget.id,

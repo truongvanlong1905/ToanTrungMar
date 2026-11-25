@@ -1,6 +1,6 @@
 # Phân công 5 nhóm và quyền sở hữu đường dẫn
 
-Nguồn: bảng phân nhóm người dùng cung cấp; [ảnh nguồn](sources/assets/team-assignment.png). Mỗi nhóm theo trọn FE–BE–DB–test của module. Đây là phân công phát triển, khác 8 vai trò đăng nhập trong ma trận BA.
+Nguồn: bảng phân nhóm người dùng cung cấp (ảnh nguồn BA lưu cục bộ ngoài Git). Mỗi nhóm theo trọn FE–BE–DB–test của module. Đây là phân công phát triển, khác 8 vai trò đăng nhập trong ma trận BA.
 
 | Nhóm | Phụ trách | Module | Route | Branch |
 | --- | --- | --- | --- | --- |

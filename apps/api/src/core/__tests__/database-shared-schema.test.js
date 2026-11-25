@@ -43,9 +43,7 @@ function sha256File(filePath) {
 }
 
 function createDisposableDbUrl(t, prefix) {
-  const folderName = `.tmp-tt-db-${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const tmpDir = path.join(PRISMA_DIR, folderName);
-  fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `tt-db-${prefix}-`));
   t.after(() => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -53,8 +51,8 @@ function createDisposableDbUrl(t, prefix) {
       // Ignore Windows file lock cleanup delay
     }
   });
-  const dbFile = path.join(tmpDir, 'disposable.db');
-  const dbUrl = `file:./${folderName}/disposable.db`;
+  const dbFile = path.join(tmpDir, 'disposable.db').replace(/\\/g, '/');
+  const dbUrl = dbFile.startsWith('/') ? `file://${dbFile}` : `file:${dbFile}`;
   return { tmpDir, dbFile, dbUrl };
 }
 
@@ -121,6 +119,11 @@ test('Rehearsal 2 (Representative Existing DB Copy): upgrades intermediate 18-ta
 
   // Insert representative pre-existing records into the intermediate DB copy using raw SQL
   const rawSetup = new PrismaClient({ datasources: { db: { url: dbUrl } } });
+  await rawSetup.$executeRawUnsafe(`DELETE FROM "lead_products" WHERE "id" IN (201, 202, 203) OR "lead_id" = 101;`);
+  await rawSetup.$executeRawUnsafe(`DELETE FROM "leads" WHERE "id" = 101 OR "lead_code" = 'TT-20261106-0101';`);
+  await rawSetup.$executeRawUnsafe(`DELETE FROM "platform_daily_metrics" WHERE "id" = 401;`);
+  await rawSetup.$executeRawUnsafe(`DELETE FROM "campaigns" WHERE "id" = 301 OR "campaign_code" = 'CMP-LED-01';`);
+  await rawSetup.$executeRawUnsafe(`DELETE FROM "ai_usage_logs" WHERE "id" = 501;`);
   await rawSetup.$executeRawUnsafe(`
     INSERT INTO "leads" (
       "id", "lead_code", "company_name", "contact_name", "phone", "email",

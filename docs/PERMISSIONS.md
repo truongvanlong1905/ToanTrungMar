@@ -1,6 +1,6 @@
 # Phân quyền — giữ nguyên ma trận BA
 
-Người dùng đã chỉ định ma trận BA là nguồn chuẩn. Bảng dưới chép lại ô quyền từ [ảnh BA đầy đủ](sources/assets/ba-rbac.png), đọc lại từ tab “Chức năng và phân quyền” ngày 05/11/2026. Không dùng ma trận 4 vai trò đề xuất cũ và không tự điều chỉnh các dấu quyền của BA.
+Người dùng đã chỉ định ma trận BA là nguồn chuẩn. Bảng dưới chép lại ô quyền từ ảnh BA đầy đủ (lưu cục bộ ngoài Git), đọc lại từ tab “Chức năng và phân quyền” ngày 05/11/2026. Không dùng ma trận 4 vai trò đề xuất cũ và không tự điều chỉnh các dấu quyền của BA.
 
 ## Vai trò
 

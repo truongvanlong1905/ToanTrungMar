@@ -12,9 +12,13 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "db:generate": "prisma generate --schema=prisma",
+    "db:generate": "prisma generate --schema=prisma && prisma generate --schema=prisma-postgres",
+    "db:generate:postgres": "prisma generate --schema=prisma-postgres",
     "db:migrate:deploy": "node scripts/migrate-deploy.js",
     "db:push": "prisma db push --schema=prisma",
-    "db:seed": "node scripts/seed.js"
+    "db:seed": "node scripts/seed.js",
+    "db:seed:catalog": "node scripts/seed.js --catalog-only",
+    "db:seed:demo": "node scripts/seed.js --demo",
+    "db:provision:admin": "node scripts/provision-admin.js"
   }
 }

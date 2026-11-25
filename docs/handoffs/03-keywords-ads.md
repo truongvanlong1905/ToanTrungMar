@@ -10,7 +10,7 @@ Kho mã nguồn GitHub: `https://github.com/truongvanlong1905/ToanTrungMar` (nh�
 ## 1. Hiện trạng & Nguồn nghiệp vụ chuẩn
 - Đã tiếp nhận và phân tích toàn diện **Tài liệu đặc tả BA: UC05 (Nội dung SEO tích hợp AI)**.
 - Chi tiết đặc tả nghiệp vụ đầy đủ đã được ghi nhận tại [docs/modules/03-keywords-ads.md](../modules/03-keywords-ads.md).
-- Khung thư mục mã nguồn đã sẵn sàng: `apps/web/src/modules/03-keywords-ads/`, `apps/api/src/modules/03-keywords-ads/`, `packages/contracts/src/03-keywords-ads/`.
+- Mã nguồn hiện tại: Đã triển khai hoàn chỉnh (`apps/web/src/modules/03-keywords-ads/SeoKeywordsWorkspace.tsx`, `apps/api/src/modules/03-keywords-ads/service.ts`, `packages/contracts/src/03-keywords-ads/index.ts`), bao gồm tổng hợp chiến dịch `grain = 'campaign'`, tính toán Derived Cache từ khóa từ kho D3, trình soạn thảo/duyệt/rút duyệt/đăng bài chuẩn SEO bằng AI trên 3 website Toàn Trung và xuất Excel `.xlsx`.
 
 ---
 
@@ -32,3 +32,11 @@ Kho mã nguồn GitHub: `https://github.com/truongvanlong1905/ToanTrungMar` (nh�
 6. **Database Model (Đã hoàn thiện tại `packages/database/prisma/models/03-keywords-ads.prisma`)**:
    - Gồm 3 bảng: `seo_keywords` (các cột metric được đánh dấu rõ là `cached_*` dẫn xuất từ bảng chuẩn `platform_daily_metrics` kèm cửa sổ thời gian và thời điểm làm mới), `seo_articles` (có `version`, `current_revision_id`, `approved_revision_id` khóa đúng phiên bản được duyệt, và `@@unique([target_website, slug])`), `seo_article_revisions` (`@@unique([article_id, revision_number])`).
    - Ghi nhận token/chi phí AI qua bảng dùng chung `ai_usage_logs` (`core.prisma`) và hàm `recordAiUsageAttempt`.
+
+
+---
+
+## 3. Nâng cấp Chuẩn Doanh Nghiệp Local — Enterprise Edition (24/11/2026)
+- **Bảng dữ liệu ảo hóa 60 FPS (`VirtualizedExcelGrid.tsx`)**: Tích hợp `useVirtualRows` vào `AdsExcelTableSection.tsx` và bảng từ khóa/trang đích tại `SeoKeywordsWorkspace.tsx`, giữ nguyên tiêu đề cột Excel A/B/C và thanh tính nhanh `SUM / AVG / COUNT` ở quy mô 10,000+ dòng.
+- **Chấm điểm chuyên môn kỹ thuật LED B2B Zero-PII (`LedSeoQualityScorerModal.tsx`)**: Chấm điểm thang 100 trực tiếp trong trình biên tập bài viết SEO qua `/api/v1/ai/copilot` (`action: 'score_seo_article'`), kiểm tra thuật ngữ chuyên ngành LED (`Pixel Pitch`, `cd/m²`, `3840Hz`, `Cabinet`, `Novastar`, `IP65`, `GOB/SMD`), cấu trúc `H2/H3`, liên kết nội bộ và cổng lọc Zero-PII.
+- **Cảnh báo tụt hạng từ khóa SEO chiến lược**: Đồng bộ cảnh báo từ khóa rớt hạng lên thanh `FunnelAnomalyGuardStrip` tại M02/M04/Dashboard.

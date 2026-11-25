@@ -294,17 +294,8 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Divider "Hoặc" */}
-          <div className="relative my-7 flex items-center justify-center">
-            <div className="w-full border-t border-slate-100" />
-            <span className="relative bg-white px-4 text-[12px] text-slate-400 font-normal">
-              Hoặc
-            </span>
-            <div className="w-full border-t border-slate-100" />
-          </div>
-
           {/* Footer */}
-          <footer className="text-center text-[12px] text-slate-400 font-normal">
+          <footer className="mt-7 pt-5 border-t border-slate-100 text-center text-[12px] text-slate-400 font-normal">
             © 2026 Toàn Trung. All rights reserved.
           </footer>
         </div>

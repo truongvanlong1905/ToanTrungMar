@@ -105,7 +105,7 @@ export function toJsonSafe<T>(input: T): unknown {
 }
 
 export interface WebhookLeadIntakeInput {
-  intakeSourceProvider: 'website_webhook' | 'google_lead_form' | 'manual';
+  intakeSourceProvider: 'website_webhook' | 'google_lead_form' | 'gmail_sync' | 'manual';
   intakeSourceAccountKey: string; // VD: 'toantrung.com.vn' | 'bangled.vn' | 'gads:123-456-7890' | 'internal'
   externalSubmissionId?: string | null;
   leadCode: string;
@@ -134,6 +134,8 @@ export interface WebhookLeadIntakeInput {
   landingPageUrl?: string | null;
   deviceType?: string | null;
   ipAddress?: string | null;
+  existingLeadAction?: 'create_new' | 'work_on_existing';
+  targetExistingLeadId?: number | null;
 }
 
 /**
@@ -141,7 +143,7 @@ export interface WebhookLeadIntakeInput {
  */
 export function validateLeadIntakeByChannel(input: WebhookLeadIntakeInput): void {
   const phone = (input.phone || '').trim();
-  if (!phone) {
+  if (!phone && input.intakeSourceProvider !== 'gmail_sync') {
     throw new IntakeValidationError('Số điện thoại liên hệ là bắt buộc.');
   }
 
@@ -157,6 +159,14 @@ export function validateLeadIntakeByChannel(input: WebhookLeadIntakeInput): void
     if (!input.intakeSourceAccountKey || !input.externalSubmissionId) {
       throw new IntakeValidationError('Google Lead Form bắt buộc có mã tài khoản và externalSubmissionId.');
     }
+  } else if (input.intakeSourceProvider === 'gmail_sync') {
+    const email = (input.email || '').trim();
+    if (!email && !phone) {
+      throw new IntakeValidationError('Lead đồng bộ từ Gmail bắt buộc có Email hoặc Số điện thoại.');
+    }
+    if (!input.intakeSourceAccountKey || !input.externalSubmissionId) {
+      throw new IntakeValidationError('Lead đồng bộ từ Gmail bắt buộc có tài khoản Gmail và mã thư (externalSubmissionId).');
+    }
   } else if (input.intakeSourceProvider === 'manual') {
     if (!input.createdByUserId) {
       throw new IntakeValidationError('Lead tạo thủ công (Hotline/Zalo) bắt buộc ghi nhận nhân sự tạo (createdByUserId).');
@@ -166,41 +176,45 @@ export function validateLeadIntakeByChannel(input: WebhookLeadIntakeInput): void
 
 function isUniqueConstraintError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
-  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return true;
-  if ((err as { code?: unknown }).code === 'P2002') return true;
-  const msg = String((err as { message?: unknown }).message || '');
-  return msg.includes('Unique constraint failed');
+  return (
+    (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') ||
+    (err as { code?: unknown }).code === 'P2002'
+  );
 }
 
 function isSqliteBusyError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
-  const code = (err as { code?: unknown }).code;
-  if (code === 'P2028' || code === 'P2034') return true;
   const msg = String((err as { message?: unknown }).message || '');
-  return (
-    msg.includes('SQLITE_BUSY') ||
-    msg.includes('database is locked') ||
-    msg.includes('database table is locked') ||
-    msg.includes('TransactionWriteConflict') ||
-    msg.includes('Unable to start a transaction') ||
-    msg.includes('Timed out')
-  );
+  return msg.includes('SQLITE_BUSY') || msg.includes('database is locked') || msg.includes('TransactionWriteConflict');
 }
 
-async function withConcurrencyRetry<T>(fn: () => Promise<T>, maxRetries = 12): Promise<T> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (isSqliteBusyError(err) && attempt < maxRetries) {
-        attempt += 1;
-        await new Promise((r) => setTimeout(r, 25 * attempt));
-        continue;
+const globalForIntakeQueue = globalThis as unknown as {
+  __toantrungIntakeWriteQueue?: Promise<unknown>;
+};
+
+function withSerializedIntakeLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = globalForIntakeQueue.__toantrungIntakeWriteQueue ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  globalForIntakeQueue.__toantrungIntakeWriteQueue = next.catch(() => undefined);
+  return next;
+}
+
+async function withConcurrencyRetry<T>(fn: () => Promise<T>, maxRetries = 8): Promise<T> {
+  return withSerializedIntakeLock(async () => {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (isSqliteBusyError(err) && attempt < maxRetries) {
+          attempt += 1;
+          await new Promise((r) => setTimeout(r, 15 * attempt));
+          continue;
+        }
+        throw err;
       }
-      throw err;
     }
-  }
+  });
 }
 
 /**
@@ -237,7 +251,7 @@ export async function ingestLeadWithTrackingIdempotent(
     };
   };
 
-  const preCheck = await withConcurrencyRetry(() => findExisting());
+  const preCheck = await findExisting();
   if (preCheck) return preCheck;
 
   const actorType = provider === 'manual' ? 'user' : 'webhook';
@@ -247,10 +261,8 @@ export async function ingestLeadWithTrackingIdempotent(
       : `${provider}:${accountKey}`;
 
   try {
-    return await withConcurrencyRetry(async () => {
-      const existingBeforeTx = await findExisting();
-      if (existingBeforeTx) return existingBeforeTx;
-      return client.$transaction(async (tx) => {
+    return await withConcurrencyRetry(() =>
+      client.$transaction(async (tx) => {
         if (submissionId) {
           const insideTx = await tx.marketingTracking.findUnique({
             where: {
@@ -271,6 +283,133 @@ export async function ingestLeadWithTrackingIdempotent(
           }
         }
 
+        // Kiểm tra hồ sơ khách hàng có cùng SĐT trong hệ thống (không phải Spam):
+        // - Nếu khách ĐÃ CHỐT THÀNH CÔNG (won): Tuyệt đối giữ nguyên hồ sơ đã chốt và tạo hồ sơ Lead mới liên kết về hồ sơ cũ.
+        // - Nếu khách CHƯA CHỐT (new_lead, quoting, quote_sent, lost):
+        //   + Khi chọn 'work_on_existing': Trực tiếp làm việc / mở lại và cập nhật trên hồ sơ đó.
+        //   + Khi chọn 'create_new' (hoặc mặc định tạo mới): Tạo hồ sơ Lead mới độc lập và liên kết matchedOldLeadId để bấm xem được hồ sơ cũ.
+        const existingPhoneCandidates = await tx.lead.findMany({
+          where: {
+            phone: input.phone.trim(),
+            isSpam: false,
+          },
+          include: { tracking: true },
+          orderBy: { id: 'desc' },
+        });
+
+        const existingPhoneLead =
+          (input.targetExistingLeadId
+            ? existingPhoneCandidates.find((c) => c.id === input.targetExistingLeadId)
+            : null) ||
+          existingPhoneCandidates.find((c) => c.pipelineStatus === 'won') ||
+          existingPhoneCandidates.find(
+            (c) =>
+              c.pipelineStatus === 'new_lead' ||
+              c.pipelineStatus === 'quoting' ||
+              c.pipelineStatus === 'quote_sent',
+          ) ||
+          existingPhoneCandidates[0] ||
+          null;
+
+        const shouldWorkOnExisting =
+          Boolean(existingPhoneLead) &&
+          input.existingLeadAction === 'work_on_existing' &&
+          existingPhoneLead!.pipelineStatus !== 'won';
+
+        if (existingPhoneLead && shouldWorkOnExisting) {
+          const prevStatus = existingPhoneLead.pipelineStatus;
+          const isLostBefore = prevStatus === 'lost';
+          const nextDuplicateStatus = isLostBefore ? 'lost_returning' : 'duplicate_red';
+          const nextPipelineStatus = isLostBefore ? 'new_lead' : prevStatus;
+          const sourceLabel =
+            input.selfReportedSource?.trim() ||
+            input.marketingSource ||
+            input.contactChannel;
+
+          const updatedLead = await tx.lead.update({
+            where: { id: existingPhoneLead.id },
+            data: {
+              pipelineStatus: nextPipelineStatus,
+              isDuplicateAlert: true,
+              duplicateStatus: nextDuplicateStatus,
+              contactName:
+                input.contactName?.trim() || existingPhoneLead.contactName || null,
+              companyName:
+                input.companyName?.trim() || existingPhoneLead.companyName || null,
+              projectName:
+                input.projectName?.trim() || existingPhoneLead.projectName || null,
+              email: input.email?.trim() || existingPhoneLead.email || null,
+              installationAddress:
+                input.installationAddress?.trim() ||
+                existingPhoneLead.installationAddress ||
+                null,
+              areaType: input.areaType || existingPhoneLead.areaType || null,
+              province:
+                input.province?.trim() || existingPhoneLead.province || null,
+              district:
+                input.district?.trim() || existingPhoneLead.district || null,
+              ...(input.assignedSalesId ? { assignedSalesId: input.assignedSalesId } : {}),
+              contactedAt: new Date(),
+              ...(isLostBefore ? { reopenCount: { increment: 1 } } : {}),
+              version: { increment: 1 },
+            },
+          });
+
+          const mergedTracking = existingPhoneLead.tracking
+            ? await tx.marketingTracking.update({
+                where: { id: existingPhoneLead.tracking.id },
+                data: { isRepeatLead: true },
+              })
+            : await tx.marketingTracking.create({
+                data: {
+                  leadId: existingPhoneLead.id,
+                  intakeChannel: input.contactChannel,
+                  intakeSourceProvider: provider,
+                  intakeSourceAccountKey: accountKey,
+                  externalSubmissionId: submissionId,
+                  marketingSource: sourceLabel,
+                  sourceResolutionMethod: input.sourceResolutionMethod || 'manual',
+                  isRepeatLead: true,
+                },
+              });
+
+          const mergeNote = isLostBefore
+            ? `🔄 [KHÁCH QUAY LẠI HỎI MUA] Khách hàng SĐT ${input.phone.trim()} (từng hỏi trước đây nhưng chưa chốt · Lý do lần trước: ${existingPhoneLead.lostReason || 'Hoãn dự án / Chưa chốt'}) nay liên hệ lại tiếp tục muốn mua qua ${sourceLabel}. Đã mở lại để làm việc trực tiếp trên hồ sơ này.`
+            : `🎯 [LÀM VIỆC TRỰC TIẾP TRÊN HỒ SƠ ĐANG MỞ] Khách hàng SĐT ${input.phone.trim()} cập nhật thông tin qua ${sourceLabel} khi hồ sơ đang ở trạng thái ${prevStatus}.`;
+
+          await tx.leadActivity.create({
+            data: {
+              leadId: existingPhoneLead.id,
+              actionType: isLostBefore ? 'reopen_lead' : 'add_note',
+              oldStatus: prevStatus,
+              newStatus: nextPipelineStatus,
+              transferReason: existingPhoneLead.lostReason || null,
+              actionById: input.createdByUserId ?? null,
+              actorType,
+              actorRef,
+              note: mergeNote,
+            },
+          });
+
+          return {
+            lead: updatedLead,
+            tracking: mergedTracking,
+            deduplicated: true,
+          };
+        }
+
+        const hasWonHistory = existingPhoneCandidates.some((c) => c.pipelineStatus === 'won');
+        const matchedPriorLead =
+          existingPhoneCandidates.find((c) => c.pipelineStatus === 'won') ||
+          existingPhoneLead;
+        const newLeadDuplicateStatus = matchedPriorLead
+          ? hasWonHistory
+            ? 'won_returning'
+            : matchedPriorLead.pipelineStatus === 'lost'
+              ? 'lost_returning'
+              : 'duplicate_red'
+          : 'none';
+
         const lead = await tx.lead.create({
           data: {
             leadCode: input.leadCode,
@@ -290,6 +429,9 @@ export async function ingestLeadWithTrackingIdempotent(
             createdByActorType: actorType,
             createdByActorRef: actorRef,
             assignedSalesId: input.assignedSalesId ?? input.createdByUserId ?? null,
+            isDuplicateAlert: Boolean(matchedPriorLead),
+            duplicateStatus: newLeadDuplicateStatus,
+            matchedOldLeadId: matchedPriorLead ? matchedPriorLead.id : null,
           },
         });
 
@@ -343,11 +485,11 @@ export async function ingestLeadWithTrackingIdempotent(
           tracking,
           deduplicated: false,
         };
-      }, { maxWait: 10000, timeout: 20000 });
-    });
+      }),
+    );
   } catch (err) {
     if (isUniqueConstraintError(err) && submissionId) {
-      const winner = await withConcurrencyRetry(() => findExisting());
+      const winner = await findExisting();
       if (winner) return winner;
     }
     throw err;

@@ -32,6 +32,7 @@ import {
   type RoleCode,
 } from '@toantrung/contracts';
 import { apiRequest, ApiClientError, peekApiCache } from '@/core/http/client';
+import { subscribeDataSync } from '@/core/http/data-sync-bus';
 import { useSession } from '@/core/session/SessionContext';
 
 const ROLE_BADGE_META: Record<
@@ -45,53 +46,53 @@ const ROLE_BADGE_META: Record<
   }
 > = {
   ADMIN: {
-    label: 'Quản trị viên Hệ thống',
+    label: ROLE_LABELS.ADMIN,
     shortCode: 'ADMIN',
     badgeClass: 'bg-slate-900 text-white border-slate-900 shadow-2xs',
     avatarClass: 'bg-gradient-to-br from-slate-800 to-slate-950 text-white',
     isLeadOrExec: true,
   },
   BOD: {
-    label: 'Ban Giám đốc',
+    label: ROLE_LABELS.BOD,
     shortCode: 'BOD',
     badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
     avatarClass: 'bg-gradient-to-br from-rose-500 to-red-600 text-white',
     isLeadOrExec: true,
   },
   SALES_LEAD: {
-    label: 'Trưởng phòng Kinh doanh',
+    label: ROLE_LABELS.SALES_LEAD,
     shortCode: 'Lead Sales',
     badgeClass: 'bg-indigo-50 text-indigo-700 border-indigo-200',
     avatarClass: 'bg-gradient-to-br from-indigo-600 to-blue-700 text-white',
     isLeadOrExec: true,
   },
   MKT_LEAD: {
-    label: 'Trưởng phòng Marketing',
+    label: ROLE_LABELS.MKT_LEAD,
     shortCode: 'Lead MKT',
     badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     avatarClass: 'bg-gradient-to-br from-emerald-600 to-teal-700 text-white',
     isLeadOrExec: true,
   },
   SALES: {
-    label: 'Chuyên viên Kinh doanh',
+    label: ROLE_LABELS.SALES,
     shortCode: 'Sales',
     badgeClass: 'bg-blue-50 text-blue-700 border-blue-200',
     avatarClass: 'bg-blue-100 text-blue-800 border border-blue-200',
   },
   MKT_STAFF: {
-    label: 'Chuyên viên Marketing & SEO',
+    label: ROLE_LABELS.MKT_STAFF,
     shortCode: 'MKT',
     badgeClass: 'bg-violet-50 text-violet-700 border-violet-200',
     avatarClass: 'bg-violet-100 text-violet-800 border border-violet-200',
   },
   ADS: {
-    label: 'Chuyên viên Quảng cáo Ads',
+    label: ROLE_LABELS.ADS,
     shortCode: 'Ads',
     badgeClass: 'bg-cyan-50 text-cyan-700 border-cyan-200',
     avatarClass: 'bg-cyan-100 text-cyan-800 border border-cyan-200',
   },
   DESIGNER: {
-    label: 'Chuyên viên Thiết kế 3D',
+    label: ROLE_LABELS.DESIGNER,
     shortCode: 'Design',
     badgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
     avatarClass: 'bg-amber-100 text-amber-900 border border-amber-200',
@@ -152,12 +153,14 @@ export default function AdminUsersPage() {
   const [department, setDepartment] = useState<DepartmentCode>('sales');
   const [initialPassword, setInitialPassword] = useState('');
   const [creating, setCreating] = useState(false);
+  const [createDialogError, setCreateDialogError] = useState<string | null>(null);
 
   // Edit user modal state
   const [userToEdit, setUserToEdit] = useState<AdminUserDto | null>(null);
   const [editRoleCode, setEditRoleCode] = useState<RoleCode>('SALES');
   const [editDepartment, setEditDepartment] = useState<DepartmentCode>('sales');
   const [savingEdit, setSavingEdit] = useState(false);
+  const [editDialogError, setEditDialogError] = useState<string | null>(null);
 
   // Delete confirmation modal state
   const [userToDelete, setUserToDelete] = useState<AdminUserDto | null>(null);
@@ -185,6 +188,9 @@ export default function AdminUsersPage() {
   useEffect(() => {
     if (user?.roleCode === 'ADMIN') {
       void loadUsers(false);
+      return subscribeDataSync(['auth'], () => {
+        void loadUsers(true);
+      });
     } else {
       setLoading(false);
     }
@@ -249,6 +255,7 @@ export default function AdminUsersPage() {
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
+    setCreateDialogError(null);
     setCreating(true);
     try {
       await apiRequest('/api/v1/users', {
@@ -274,9 +281,11 @@ export default function AdminUsersPage() {
       });
       await loadUsers(true);
     } catch (err) {
+      const msg = err instanceof ApiClientError ? err.message : 'Không thể tạo tài khoản.';
+      setCreateDialogError(msg);
       setFeedback({
         type: 'err',
-        text: err instanceof ApiClientError ? err.message : 'Không thể tạo tài khoản.',
+        text: msg,
       });
     } finally {
       setCreating(false);
@@ -352,7 +361,7 @@ export default function AdminUsersPage() {
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="font-display text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-                Quản lý Phòng ban &amp; Tài khoản
+                Nhân sự
               </h1>
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200/80 text-[#1E3A8A] text-xs font-bold">
                 <Users className="w-3.5 h-3.5" />
@@ -530,18 +539,26 @@ export default function AdminUsersPage() {
                           : 'hover:bg-blue-50/25'
                       }`}
                     >
-                      {/* Col 1: Avatar + Full Name */}
+                      {/* Col 1: Circular Avatar + Status Dot + Full Name */}
                       <td className="py-3.5 px-5">
                         <div className="flex items-center gap-3">
                           <div className="relative shrink-0">
-                            <div
-                              className={`w-9 h-9 rounded-xl font-display font-extrabold text-xs grid place-items-center ${roleMeta.avatarClass}`}
-                            >
-                              {getInitials(item.fullName)}
-                            </div>
+                            {item.avatarUrl ? (
+                              <img
+                                src={item.avatarUrl}
+                                alt={item.fullName}
+                                className="w-10 h-10 rounded-full object-cover ring-2 ring-slate-100 shadow-2xs"
+                              />
+                            ) : (
+                              <div
+                                className={`w-10 h-10 rounded-full font-bold text-xs grid place-items-center shadow-2xs ${roleMeta.avatarClass}`}
+                              >
+                                {getInitials(item.fullName)}
+                              </div>
+                            )}
                             <span
                               title={item.isActive ? 'Đang hoạt động' : 'Đang tạm khóa'}
-                              className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white ${
+                              className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full ring-2 ring-white ${
                                 item.isActive ? 'bg-emerald-500' : 'bg-amber-500'
                               }`}
                             />
@@ -726,13 +743,16 @@ export default function AdminUsersPage() {
               </button>
             </div>
 
-            <form onSubmit={(e) => void handleCreateUser(e)} className="mt-5 space-y-3.5">
+            <form autoComplete="off" onSubmit={(e) => void handleCreateUser(e)} className="mt-5 space-y-3.5">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
+                <label htmlFor="create-user-fullname" className="block text-xs font-bold text-slate-700 mb-1">
                   Họ và tên nhân sự
                 </label>
                 <input
+                  id="create-user-fullname"
+                  name="create_staff_fullname"
                   type="text"
+                  autoComplete="off"
                   required
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
@@ -743,11 +763,15 @@ export default function AdminUsersPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                  <label htmlFor="create-user-email" className="block text-xs font-bold text-slate-700 mb-1">
                     Email công việc
                   </label>
                   <input
+                    id="create-user-email"
+                    name="create_staff_work_email"
                     type="email"
+                    autoComplete="off"
+                    data-lpignore="true"
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -757,11 +781,14 @@ export default function AdminUsersPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                  <label htmlFor="create-user-phone" className="block text-xs font-bold text-slate-700 mb-1">
                     Số điện thoại
                   </label>
                   <input
+                    id="create-user-phone"
+                    name="create_staff_phone"
                     type="tel"
+                    autoComplete="off"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                     placeholder="0903xxxxxx"
@@ -772,10 +799,12 @@ export default function AdminUsersPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                  <label htmlFor="create-user-role" className="block text-xs font-bold text-slate-700 mb-1">
                     Vai trò BA
                   </label>
                   <select
+                    id="create-user-role"
+                    name="create_staff_role"
                     value={roleCode}
                     onChange={(e) => handleSelectCreateRole(e.target.value as RoleCode)}
                     className="w-full h-10 px-2.5 rounded-xl border border-slate-200 bg-slate-50/40 text-xs font-semibold text-slate-900 focus:bg-white focus:border-[#2563EB] focus:outline-none"
@@ -789,10 +818,12 @@ export default function AdminUsersPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                  <label htmlFor="create-user-department" className="block text-xs font-bold text-slate-700 mb-1">
                     Phòng ban trực thuộc
                   </label>
                   <select
+                    id="create-user-department"
+                    name="create_staff_department"
                     value={department}
                     onChange={(e) => setDepartment(e.target.value as DepartmentCode)}
                     className="w-full h-10 px-2.5 rounded-xl border border-slate-200 bg-slate-50/40 text-xs font-semibold text-slate-900 focus:bg-white focus:border-[#2563EB] focus:outline-none"
@@ -807,11 +838,15 @@ export default function AdminUsersPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
+                <label htmlFor="create-user-initial-password" className="block text-xs font-bold text-slate-700 mb-1">
                   Mật khẩu khởi tạo (tối thiểu 8 ký tự)
                 </label>
                 <input
+                  id="create-user-initial-password"
+                  name="create_staff_initial_password"
                   type="password"
+                  autoComplete="new-password"
+                  data-lpignore="true"
                   required
                   value={initialPassword}
                   onChange={(e) => setInitialPassword(e.target.value)}
@@ -819,6 +854,15 @@ export default function AdminUsersPage() {
                   className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50/40 text-xs text-slate-900 focus:bg-white focus:border-[#2563EB] focus:outline-none"
                 />
               </div>
+
+              {createDialogError && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-semibold"
+                >
+                  {createDialogError}
+                </div>
+              )}
 
               <div className="pt-2 flex items-center justify-end gap-2.5">
                 <button
@@ -911,13 +955,24 @@ export default function AdminUsersPage() {
                   ))}
                 </select>
               </div>
+              {editDialogError && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-semibold"
+                >
+                  {editDialogError}
+                </div>
+              )}
             </div>
 
             <div className="pt-2 flex items-center justify-end gap-2.5 text-xs">
               <button
                 type="button"
                 disabled={savingEdit}
-                onClick={() => setUserToEdit(null)}
+                onClick={() => {
+                  setEditDialogError(null);
+                  setUserToEdit(null);
+                }}
                 className="h-9 px-4 rounded-xl border border-slate-200 font-bold text-slate-600 hover:bg-slate-50"
               >
                 Hủy
@@ -927,6 +982,7 @@ export default function AdminUsersPage() {
                 disabled={savingEdit}
                 onClick={async () => {
                   setSavingEdit(true);
+                  setEditDialogError(null);
                   try {
                     await apiRequest('/api/v1/users', {
                       method: 'PATCH',
@@ -944,12 +1000,14 @@ export default function AdminUsersPage() {
                     setUserToEdit(null);
                     await loadUsers(true);
                   } catch (err) {
+                    const msg =
+                      err instanceof ApiClientError
+                        ? err.message
+                        : 'Lỗi cập nhật thông tin nhân sự.';
+                    setEditDialogError(msg);
                     setFeedback({
                       type: 'err',
-                      text:
-                        err instanceof ApiClientError
-                          ? err.message
-                          : 'Lỗi cập nhật thông tin nhân sự.',
+                      text: msg,
                     });
                   } finally {
                     setSavingEdit(false);

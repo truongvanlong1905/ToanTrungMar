@@ -153,3 +153,13 @@ Nguồn/khác biệt: Hình UC06 kiểm tra token theo user/dự án; chưa có 
 Đầu mối đề nghị: BA + Core + Nhóm 3/5 + vận hành.
 
 Việc cần làm: Chốt chính sách và nguồn metric; không giả token/cost, không tự mua/cấp dịch vụ hoặc hứa tải/restore.
+
+## Q16
+
+**Quyền sử dụng trực tiếp công cụ "Gắn Màn LED Nhanh & Xuất MKT" cho `MKT_STAFF` / `MKT_LEAD`.** Trạng thái: MỞ.
+
+Nguồn/khác biệt: Theo ma trận BA tại [PERMISSIONS.md](../PERMISSIONS.md), quyền `AI_DESIGN` (`AI thiết kế: phối cảnh 3D và banner`) hiện chỉ cấp cho `DESIGNER` và `ADMIN`, còn `MKT_STAFF`, `ADS`, `MKT_LEAD` gửi Brief từ M03/M04 sang M05 (`submit_marketing_brief`). Người dùng đề xuất cho phép `MKT_STAFF` / `MKT_LEAD` thao tác trực tiếp trên tab "Gắn Màn LED Nhanh & Xuất MKT" để tự gắn LED lên ảnh và xuất bộ ấn phẩm đa kênh giảm thao tác thủ công, nhưng vẫn phải ẩn danh Lead theo UC01 (không lộ SĐT, email hay thông tin cá nhân khách hàng).
+
+Đầu mối đề nghị: BA + Trưởng phòng Marketing + Nhóm 5 + Core.
+
+Việc cần làm: Chờ BA/Ban Giám đốc chốt mở quyền chính thức trước khi thay đổi `ROLE_MATRIX`; tạm thời giữ nguyên ma trận BA hiện tại trong mã nguồn.

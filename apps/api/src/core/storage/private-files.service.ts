@@ -53,12 +53,67 @@ function detectMimeType(buffer: Buffer, declared: string, ext: string): string {
   if (normalizedExt === '.png') return 'image/png';
   if (normalizedExt === '.jpg' || normalizedExt === '.jpeg') return 'image/jpeg';
   if (normalizedExt === '.webp') return 'image/webp';
+  if (normalizedExt === '.gif') return 'image/gif';
+  if (normalizedExt === '.svg') return 'image/svg+xml';
+  if (normalizedExt === '.bmp') return 'image/bmp';
+  if (normalizedExt === '.heic' || normalizedExt === '.heif') return 'image/heic';
   if (normalizedExt === '.doc') return 'application/msword';
   if (normalizedExt === '.docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   if (normalizedExt === '.xls') return 'application/vnd.ms-excel';
   if (normalizedExt === '.xlsx') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (normalizedExt === '.csv') return 'text/csv; charset=utf-8';
+  if (normalizedExt === '.ppt') return 'application/vnd.ms-powerpoint';
+  if (normalizedExt === '.pptx') return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  if (normalizedExt === '.txt') return 'text/plain; charset=utf-8';
+  if (normalizedExt === '.zip') return 'application/zip';
+  if (normalizedExt === '.rar') return 'application/vnd.rar';
+  if (normalizedExt === '.7z') return 'application/x-7z-compressed';
+  if (normalizedExt === '.dwg') return 'image/vnd.dwg';
+  if (normalizedExt === '.dxf') return 'image/vnd.dxf';
+  if (normalizedExt === '.mp4') return 'video/mp4';
+  if (normalizedExt === '.mov') return 'video/quicktime';
+  if (normalizedExt === '.webm') return 'video/webm';
 
   return declared || 'application/octet-stream';
+}
+
+const BLOCKED_UPLOAD_EXTENSIONS = new Set([
+  '.html',
+  '.htm',
+  '.xhtml',
+  '.svg',
+  '.svgz',
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.php',
+  '.sh',
+  '.bat',
+  '.cmd',
+  '.ps1',
+  '.exe',
+  '.dll',
+  '.msi',
+  '.vbs',
+  '.jar',
+]);
+
+function hasDisguisedExecutableMarkup(buffer: Buffer): boolean {
+  const head = buffer
+    .subarray(0, Math.min(buffer.length, 512))
+    .toString('utf8')
+    .replace(/\0/g, '')
+    .toLowerCase();
+  return (
+    head.includes('<svg') ||
+    head.includes('<script') ||
+    head.includes('<!doctype html') ||
+    head.includes('<html') ||
+    head.includes('javascript:')
+  );
 }
 
 export function savePrivateBusinessFile(input: SavePrivateFileInput): SavedPrivateFile {
@@ -73,6 +128,19 @@ export function savePrivateBusinessFile(input: SavePrivateFileInput): SavedPriva
   const rawExt = input.originalFileName ? path.extname(input.originalFileName) : '.png';
   const baseName = input.originalFileName ? path.basename(input.originalFileName, rawExt) : 'file';
   const cleanExt = rawExt.toLowerCase() || '.bin';
+
+  if (
+    BLOCKED_UPLOAD_EXTENSIONS.has(cleanExt) ||
+    /image\/svg\+xml|text\/html|application\/javascript|text\/javascript/i.test(
+      input.declaredMimeType || '',
+    ) ||
+    hasDisguisedExecutableMarkup(input.fileBuffer)
+  ) {
+    throw new Error(
+      'Định dạng tệp không được phép tải lên vì lý do bảo mật (chặn SVG/HTML/Script thực thi).',
+    );
+  }
+
   const cleanBase = sanitizeFileName(baseName);
   const sanitizedFileName = `${cleanBase}${cleanExt}`;
 
@@ -101,31 +169,67 @@ export function savePrivateBusinessFile(input: SavePrivateFileInput): SavedPriva
   };
 }
 
-export function readPrivateBusinessFile(storageObjectKeyOrPath: string): ReadPrivateFileResult | null {
-  if (!storageObjectKeyOrPath) return null;
+export function resolvePrivateBusinessFilePath(storageObjectKeyOrPath: string): string | null {
+  if (!storageObjectKeyOrPath || typeof storageObjectKeyOrPath !== 'string') return null;
 
-  // Prevent path traversal
-  const normalizedKey = storageObjectKeyOrPath.replace(/\\/g, '/');
-  if (normalizedKey.includes('../') || normalizedKey.includes('/..')) {
+  const normalizedKey = storageObjectKeyOrPath.replace(/\\/g, '/').trim();
+  if (
+    !normalizedKey ||
+    normalizedKey.includes('\0') ||
+    normalizedKey.startsWith('/') ||
+    /^[a-zA-Z]:/.test(normalizedKey) ||
+    normalizedKey.split('/').includes('..') ||
+    normalizedKey.split('/').includes('.')
+  ) {
     return null;
   }
 
-  let fullPath = path.resolve(APP_CONFIG.getStorageRoot(), normalizedKey);
-  if (!fs.existsSync(fullPath)) {
-    // Check if filename only
-    const base = path.basename(normalizedKey);
-    const candidateBuckets = ['leads', 'design', 'avatars', 'branding'];
-    let found = false;
+  const rootResolved = path.resolve(APP_CONFIG.getStorageRoot());
+  const fullPath = path.resolve(rootResolved, normalizedKey);
+  if (!fullPath.startsWith(rootResolved + path.sep)) {
+    return null;
+  }
+
+  if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+    return fullPath;
+  }
+
+  const base = path.basename(normalizedKey);
+  if (!base || base === '.' || base === '..' || !/^[a-zA-Z0-9._-]+$/.test(base)) {
+    return null;
+  }
+  const candidateBuckets = ['leads', 'design', 'avatars', 'branding'];
+  for (const b of candidateBuckets) {
+    const p = path.resolve(rootResolved, b, base);
+    if (p.startsWith(rootResolved + path.sep) && fs.existsSync(p) && fs.statSync(p).isFile()) {
+      return p;
+    }
+  }
+
+  // Fallback read-only check against legacy ./storage folder so historical uploads do not 404
+  const legacyRoot = path.resolve(rootResolved, '..', 'storage');
+  if (legacyRoot !== rootResolved && fs.existsSync(legacyRoot)) {
+    const legacyFullPath = path.resolve(legacyRoot, normalizedKey);
+    if (
+      legacyFullPath.startsWith(legacyRoot + path.sep) &&
+      fs.existsSync(legacyFullPath) &&
+      fs.statSync(legacyFullPath).isFile()
+    ) {
+      return legacyFullPath;
+    }
     for (const b of candidateBuckets) {
-      const p = path.join(APP_CONFIG.getStorageRoot(), b, base);
-      if (fs.existsSync(p)) {
-        fullPath = p;
-        found = true;
-        break;
+      const p = path.resolve(legacyRoot, b, base);
+      if (p.startsWith(legacyRoot + path.sep) && fs.existsSync(p) && fs.statSync(p).isFile()) {
+        return p;
       }
     }
-    if (!found) return null;
   }
+  return null;
+}
+
+export function readPrivateBusinessFile(storageObjectKeyOrPath: string): ReadPrivateFileResult | null {
+  const fullPath = resolvePrivateBusinessFilePath(storageObjectKeyOrPath);
+  if (!fullPath) return null;
 
   try {
     const buffer = fs.readFileSync(fullPath);
@@ -140,5 +244,72 @@ export function readPrivateBusinessFile(storageObjectKeyOrPath: string): ReadPri
   } catch {
     return null;
   }
+}
+
+export function deletePrivateBusinessFile(storageObjectKeyOrPath: string): void {
+  if (!storageObjectKeyOrPath || typeof storageObjectKeyOrPath !== 'string') return;
+  const normalizedKey = storageObjectKeyOrPath.replace(/\\/g, '/').trim();
+  if (
+    !normalizedKey ||
+    normalizedKey.includes('\0') ||
+    normalizedKey.startsWith('/') ||
+    /^[a-zA-Z]:/.test(normalizedKey) ||
+    normalizedKey.split('/').includes('..')
+  ) {
+    return;
+  }
+  try {
+    const rootResolved = path.resolve(APP_CONFIG.getStorageRoot());
+    const fullPath = path.resolve(rootResolved, normalizedKey);
+    if (!fullPath.startsWith(rootResolved + path.sep)) return;
+    if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+      fs.unlinkSync(fullPath);
+    }
+  } catch {
+    // Ignore file deletion errors
+  }
+}
+
+export interface BackupBusinessFileEntry {
+  relativeKey: string;
+  sizeBytes: number;
+  sha256: string;
+}
+
+const BUSINESS_FILE_BUCKETS = ['leads', 'design', 'avatars', 'branding', 'reports'] as const;
+
+export function copyAndHashBusinessFilesForBackup(backupFilesDir: string): BackupBusinessFileEntry[] {
+  const rootResolved = path.resolve(APP_CONFIG.getStorageRoot());
+  const manifestEntries: BackupBusinessFileEntry[] = [];
+  fs.mkdirSync(backupFilesDir, { recursive: true });
+
+  for (const bucket of BUSINESS_FILE_BUCKETS) {
+    const srcBucketDir = path.join(rootResolved, bucket);
+    if (!fs.existsSync(srcBucketDir) || !fs.statSync(srcBucketDir).isDirectory()) continue;
+
+    const stack: string[] = [srcBucketDir];
+    while (stack.length > 0) {
+      const currentDir = stack.pop()!;
+      for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+        const fullSrcPath = path.join(currentDir, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(fullSrcPath);
+        } else if (entry.isFile()) {
+          const relKey = path.relative(rootResolved, fullSrcPath).replace(/\\/g, '/');
+          const destPath = path.join(backupFilesDir, relKey);
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          const buf = fs.readFileSync(fullSrcPath);
+          fs.writeFileSync(destPath, buf);
+          manifestEntries.push({
+            relativeKey: relKey,
+            sizeBytes: buf.length,
+            sha256: crypto.createHash('sha256').update(buf).digest('hex'),
+          });
+        }
+      }
+    }
+  }
+
+  return manifestEntries.sort((a, b) => a.relativeKey.localeCompare(b.relativeKey));
 }
 

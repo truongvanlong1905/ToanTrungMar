@@ -1,6 +1,6 @@
 # Nhận diện, nội dung UI và danh mục sản phẩm
 
-Nguồn: feedback giao diện [S02](sources/README.md#s02), brief [S01](sources/README.md#s01), profile/sản phẩm [S09/S10](sources/README.md), website chính thức [S11](sources/README.md#s11), hình đăng nhập người dùng gửi. Đây là hướng dẫn, chưa tạo giao diện.
+Nguồn: feedback giao diện S02, brief S01, profile/sản phẩm S09/S10, website chính thức S11 và hình đăng nhập người dùng gửi (bộ ảnh/PDF gốc lưu cục bộ ngoài Git). Đây là hướng dẫn chuẩn giao diện cho dự án.
 
 ## Nhận diện
 

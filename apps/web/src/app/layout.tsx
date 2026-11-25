@@ -4,8 +4,15 @@ import './globals.css';
 import { SessionProvider } from '@/core/session/SessionContext';
 
 export const metadata: Metadata = {
-  title: 'Toàn Trung V2 — Hệ thống Quản lý Marketing & Kinh doanh Nội bộ',
-  description: 'Nền tảng quản trị nội bộ dành cho nhân sự Công ty Toàn Trung',
+  title: 'Toàn Trung CRM — Hệ thống Quản trị Marketing & Kinh doanh',
+  description: 'Nền tảng quản trị Marketing, Kinh doanh & Thiết kế 3D nội bộ Công ty Cổ phần Điện tử Viễn thông Toàn Trung',
+  icons: {
+    icon: '/brand/logo-toan-trung.png',
+    shortcut: '/brand/logo-toan-trung.png',
+  },
+  other: {
+    'text-scale': 'scale',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

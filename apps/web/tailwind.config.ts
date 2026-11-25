@@ -1,5 +1,14 @@
 import type { Config } from 'tailwindcss';
 
+const unifiedSans = [
+  '"Be Vietnam Pro"',
+  'system-ui',
+  '-apple-system',
+  '"Segoe UI"',
+  'Roboto',
+  'sans-serif',
+];
+
 const config: Config = {
   content: ['./src/**/*.{js,ts,jsx,tsx,mdx}'],
   theme: {
@@ -29,9 +38,17 @@ const config: Config = {
         },
       },
       fontFamily: {
-        display: ['"Plus Jakarta Sans"', '"Be Vietnam Pro"', 'system-ui', 'sans-serif'],
-        sans: ['"Be Vietnam Pro"', 'Inter', 'system-ui', 'sans-serif'],
-        mono: ['"Be Vietnam Pro"', 'Inter', 'system-ui', 'sans-serif'],
+        display: unifiedSans,
+        sans: unifiedSans,
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+      },
+      fontSize: {
+        xs: ['0.875rem', { lineHeight: '1.45' }],
+        sm: ['0.975rem', { lineHeight: '1.5' }],
+        base: ['1.0625rem', { lineHeight: '1.55' }],
+        lg: ['1.225rem', { lineHeight: '1.45' }],
+        xl: ['1.375rem', { lineHeight: '1.4' }],
+        '2xl': ['1.625rem', { lineHeight: '1.3' }],
       },
       borderRadius: {
         xl: '12px',
@@ -47,4 +64,3 @@ const config: Config = {
 };
 
 export default config;
-

@@ -1,0 +1,337 @@
+import { z } from 'zod';
+import type { MonetaryAmountDto } from '../common';
+
+const BigIntStringSchema = z
+  .string()
+  .trim()
+  .regex(/^-?\d+$/, 'Giá trị số nguyên lớn (BigInt) phải là chuỗi chữ số hợp lệ.');
+
+export const MARKETING_PLATFORMS = [
+  'GOOGLE_ADS',
+  'GA4',
+  'SEARCH_CONSOLE',
+  'FANPAGE',
+  'GOOGLE_TRENDS',
+  'EXTERNAL',
+] as const;
+
+export type MarketingPlatform = (typeof MARKETING_PLATFORMS)[number];
+
+export const MARKETING_SOURCES = [
+  'GOOGLE_ADS',
+  'ORGANIC_SEARCH',
+  'SOCIAL',
+  'REFERRAL',
+  'DIRECT',
+  'OTHER',
+  'UNKNOWN',
+  'MANUAL',
+] as const;
+
+export type MarketingSource = (typeof MARKETING_SOURCES)[number];
+
+export const MARKETING_SOURCE_LABELS: Record<MarketingSource, string> = {
+  GOOGLE_ADS: 'Google Ads',
+  ORGANIC_SEARCH: 'Tìm kiếm tự nhiên',
+  SOCIAL: 'Mạng xã hội',
+  REFERRAL: 'Website giới thiệu',
+  DIRECT: 'Truy cập trực tiếp',
+  OTHER: 'Khác',
+  UNKNOWN: 'Chưa xác định',
+  MANUAL: 'Nhập tay',
+};
+
+export interface CampaignItemDto {
+  id: number;
+  platform: MarketingPlatform;
+  accountExternalId: string;
+  campaignCode: string;
+  campaignName: string;
+  status: 'ACTIVE' | 'PAUSED' | 'ENDED';
+  dailyBudget: MonetaryAmountDto | null;
+  isAutoSynced: boolean;
+  startDate: string | null;
+  endDate: string | null;
+  leadsCountL1: number;
+  leadsCountL2: number;
+  leadsCountL3: number;
+  repeatLeadsCount: number;
+  quoteSentCount: number;
+  wonCount: number;
+  totalSpend: MonetaryAmountDto | null;
+  cplEffective: MonetaryAmountDto | null;
+  costPerQuote: MonetaryAmountDto | null;
+  costPerWon: MonetaryAmountDto | null;
+}
+
+export interface AttributionSummaryRowDto {
+  dimensionType: 'CHANNEL' | 'SOURCE' | 'CAMPAIGN' | 'LANDING_PAGE' | 'DEVICE';
+  dimensionKey: string;
+  dimensionLabel: string;
+  rawLeadsL1: number;
+  validLeadsL2: number;
+  effectiveLeadsL3: number;
+  repeatLeads: number;
+  quoteSentCount: number;
+  wonCount: number;
+  quoteRateText: string;
+  winRateText: string;
+}
+
+export interface PlatformSyncStatusDto {
+  id: number;
+  platform: MarketingPlatform;
+  accountPropertyId: string;
+  scheduleSlot: 'FULL_0200' | 'LIGHT_1100' | 'LIGHT_1700' | 'MANUAL_RETRY';
+  windowDays: number;
+  status: 'RUNNING' | 'SUCCESS' | 'FAILED';
+  recordsUpserted: number;
+  errorMessage: string | null;
+  consecutiveFailureCount: number;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface LeadReconciliationItemDto {
+  id: number;
+  reconcileDate: string;
+  platform: string;
+  accountPropertyId: string;
+  campaignExternalId: string;
+  crmLeadCount: number;
+  errorIntakeCount: number;
+  platformReportedCount: number;
+  discrepancyCount: number;
+  status: 'MATCHED' | 'ALERT_OPEN' | 'RESOLVED';
+  resolutionNote: string | null;
+  resolvedByName: string | null;
+  resolvedAt: string | null;
+}
+
+export interface WebhookIntakeErrorItemDto {
+  id: number;
+  intakeSourceProvider: string;
+  intakeSourceAccountKey: string;
+  sourceChannel: string;
+  externalSubmissionId: string | null;
+  errorReason: string;
+  status: 'FAILED' | 'REPLAYED' | 'IGNORED';
+  createdAt: string;
+  replayedAt: string | null;
+}
+
+export interface TrackingSourceStatusItemDto {
+  sourceKey: string;
+  sourceName: string;
+  connectionStatus: string;
+  backendSchedule: string;
+  sourceLatency: string;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  dataRangeCovered: string;
+  quotaOrLimitNote: string;
+  isUsingCachedData: boolean;
+}
+
+export interface TrackingDashboardDto {
+  periodDays: number;
+  dateRange?: {
+    startDateStr: string;
+    endDateStr: string;
+    totalCalendarDays: number;
+    isTodayIncluded: boolean;
+    timezone: string;
+  };
+  isSmallSample: boolean;
+  smallSampleNote: string | null;
+  todayPreliminaryNotice: string;
+  sourceStatuses?: TrackingSourceStatusItemDto[];
+  hostingLimitationNote?: string;
+  liveIntegrationMode: 'FIXTURE_SIMULATION' | 'LIVE_CONFIGURED';
+  lastSyncedAt: string | null;
+  totals: {
+    rawLeadsL1: number;
+    validLeadsL2: number;
+    effectiveLeadsL3: number;
+    repeatLeads: number;
+    unknownSourceLeads: number;
+    unknownCampaignLeads: number;
+    utmGclidMismatchCount: number;
+    unmatchedUtmCount: number;
+    openReconciliationAlerts: number;
+    consecutiveSyncFailureAlerts: number;
+  };
+  bySource: AttributionSummaryRowDto[];
+  byChannel: AttributionSummaryRowDto[];
+  campaigns: CampaignItemDto[];
+  syncLogs: PlatformSyncStatusDto[];
+  reconciliations: LeadReconciliationItemDto[];
+  webhookErrors: WebhookIntakeErrorItemDto[];
+  sourceVsSelfReported: Array<{
+    leadCode: string;
+    sourceWebsite?: string;
+    contactChannel: string;
+    marketingSource: string;
+    selfReportedSource: string | null;
+    utmGclidMismatch: boolean;
+    createdAt: string;
+  }>;
+  touchpointSummary?: {
+    productViews: number;
+    contactClicks: number;
+    formSubmits: number;
+    createdLeads: number;
+  };
+  leadJourneys?: Array<{
+    leadCode: string;
+    sourceWebsite: string;
+    landingPageUrl: string | null;
+    marketingSource: string;
+    campaignName: string | null;
+    pipelineStatus: string;
+    touchpointsCount: number;
+    recentActions: string[];
+    createdAt: string;
+  }>;
+  googleAssetsHub?: any;
+}
+
+export const TrackingTouchpointSchema = z.object({
+  eventId: z.string().trim().min(2).max(150),
+  eventType: z.enum(['product_view', 'contact_click', 'form_submit_success']),
+  sourceWebsite: z.string().trim().min(2).max(150),
+  pageUrl: z.string().trim().max(500).optional().nullable(),
+  leadCode: z.string().trim().max(80).optional().nullable(),
+  submissionId: z.string().trim().max(150).optional().nullable(),
+  visitorId: z.string().trim().max(150).optional().nullable(),
+  occurredAt: z.string().trim().max(60).optional().nullable(),
+});
+
+export type TrackingTouchpointDto = z.infer<typeof TrackingTouchpointSchema>;
+
+export const WebhookLeadIntakeSchema = z.object({
+  intakeSourceProvider: z.enum(['WEBSITE_FORM', 'GOOGLE_LEAD_FORM']).default('WEBSITE_FORM'),
+  intakeSourceAccountKey: z.string().trim().min(2).max(120),
+  externalSubmissionId: z.string().trim().min(2).max(150),
+  sourceWebsite: z.string().trim().max(150).optional().nullable(),
+  formId: z.string().trim().max(100).optional().nullable(),
+  submittedAt: z.string().trim().max(60).optional().nullable(),
+  phone: z.string().trim().min(3).max(40),
+  email: z.string().trim().max(150).optional().nullable(),
+  contactName: z.string().trim().max(150).optional().nullable(),
+  companyName: z.string().trim().max(200).optional().nullable(),
+  projectName: z.string().trim().max(200).optional().nullable(),
+  areaType: z.enum(['hcm', 'other_province']).optional().nullable(),
+  hcmDistrict: z.string().trim().max(100).optional().nullable(),
+  province: z.string().trim().max(100).optional().nullable(),
+  installationAddress: z.string().trim().max(500).optional().nullable(),
+  productCodes: z.array(z.string().trim()).optional(),
+  note: z.string().trim().max(2000).optional().nullable(),
+  tracking: z
+    .object({
+      gclid: z.string().trim().max(200).optional().nullable(),
+      googleCampaignCode: z.string().trim().max(120).optional().nullable(),
+      utmSource: z.string().trim().max(120).optional().nullable(),
+      utmMedium: z.string().trim().max(120).optional().nullable(),
+      utmCampaign: z.string().trim().max(150).optional().nullable(),
+      utmContent: z.string().trim().max(150).optional().nullable(),
+      utmTerm: z.string().trim().max(150).optional().nullable(),
+      landingPageUrl: z.string().trim().max(500).optional().nullable(),
+      referrerUrl: z.string().trim().max(500).optional().nullable(),
+      deviceType: z.enum(['mobile', 'desktop', 'tablet']).optional().nullable(),
+    })
+    .optional(),
+});
+
+export type WebhookLeadIntakeDto = z.infer<typeof WebhookLeadIntakeSchema>;
+
+export const DeclareExternalCampaignSchema = z.object({
+  platform: z.enum(MARKETING_PLATFORMS).default('EXTERNAL'),
+  accountExternalId: z.string().trim().min(2).max(100).default('TOANTRUNG_MKT'),
+  campaignCode: z.string().trim().min(2, 'Mã chiến dịch tối thiểu 2 ký tự.').max(100),
+  campaignName: z.string().trim().min(3, 'Tên chiến dịch tối thiểu 3 ký tự.').max(200),
+  dailyBudgetMicrosString: BigIntStringSchema.optional().nullable(),
+});
+
+export type DeclareExternalCampaignDto = z.infer<typeof DeclareExternalCampaignSchema>;
+
+export const TriggerPlatformSyncSchema = z.object({
+  scheduleSlot: z.enum(['FULL_0200', 'LIGHT_1100', 'LIGHT_1700', 'MANUAL_RETRY']).default('MANUAL_RETRY'),
+  platforms: z.array(z.enum(MARKETING_PLATFORMS)).optional(),
+  runGclidResolution: z.boolean().default(true),
+  runReconciliation: z.boolean().default(true),
+});
+
+export type TriggerPlatformSyncDto = z.infer<typeof TriggerPlatformSyncSchema>;
+
+export const ResolveReconciliationSchema = z.object({
+  reconciliationId: z.number().int().positive(),
+  resolutionNote: z.string().trim().min(5, 'Vui lòng nhập ghi chú xử lý đối soát (tối thiểu 5 ký tự).').max(500),
+});
+
+export type ResolveReconciliationDto = z.infer<typeof ResolveReconciliationSchema>;
+
+export interface GoogleAccessibleResourceItem {
+  id: string;
+  name: string;
+  type: 'GA4_PROPERTY' | 'SEARCH_CONSOLE_SITE' | 'GOOGLE_ADS_CUSTOMER';
+  permissionLevel?: string;
+  isAccessible: boolean;
+}
+
+export interface GoogleOAuthStatusDto {
+  connected: boolean;
+  connectedEmail: string | null;
+  connectedName: string | null;
+  connectedPicture: string | null;
+  connectedAt: string | null;
+  scopes: string[];
+  hasRefreshToken: boolean;
+  expiresAt: string | null;
+  isSandboxDemo?: boolean;
+  autoSyncSlots: Array<'02:00' | '11:00' | '17:00'>;
+  lastSyncAt: string | null;
+  lastSuccessfulSyncAt?: string | null;
+  lastAttemptAt?: string | null;
+  lastErrorCode?: string | null;
+  lastErrorMessage?: string | null;
+  lastRequestId?: string | null;
+  connectionStatus: 'CONNECTED' | 'EXPIRED' | 'PERMISSION_ERROR' | 'SYNC_ERROR' | 'DISCONNECTED';
+  detectedGa4PropertyId?: string | null;
+  detectedGadsCustomerId?: string | null;
+  selectedGa4PropertyId?: string | null;
+  selectedGadsCustomerId?: string | null;
+  selectedGscSiteUrl?: string | null;
+  accessibleResources: GoogleAccessibleResourceItem[];
+}
+
+export interface GoogleTestConnectionResultDto {
+  success: boolean;
+  checkedAt: string;
+  connectionStatus: 'CONNECTED' | 'EXPIRED' | 'PERMISSION_ERROR' | 'SYNC_ERROR' | 'DISCONNECTED';
+  userEmail: string;
+  userName?: string | null;
+  canAccessGa4: boolean;
+  ga4PropertiesCount: number;
+  canAccessSearchConsole: boolean;
+  gscSitesCount: number;
+  canAccessGoogleAds: boolean;
+  adsAccessibleCustomersCount: number;
+  accessibleResources: GoogleAccessibleResourceItem[];
+  message: string;
+}
+
+export const SelectGoogleResourcesSchema = z.object({
+  selectedGa4PropertyId: z.string().trim().optional().nullable(),
+  selectedGadsCustomerId: z.string().trim().optional().nullable(),
+  selectedGscSiteUrl: z.string().trim().optional().nullable(),
+});
+
+export type SelectGoogleResourcesDto = z.infer<typeof SelectGoogleResourcesSchema>;
+
+export interface GoogleOAuthClientConfigDto {
+  hasClientId: boolean;
+  clientIdMasked: string | null;
+  hasClientSecret: boolean;
+}
+

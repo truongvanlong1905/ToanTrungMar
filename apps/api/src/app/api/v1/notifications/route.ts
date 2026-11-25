@@ -11,7 +11,15 @@ export async function GET(req: Request) {
   const auth = await requireAuthenticatedSession(req, { requireCsrf: false });
   if (!auth.ok) return auth.response;
 
-  const result = await listUserNotifications(auth.user.id, auth.user.roleCode);
+  const url = new URL(req.url);
+  if (url.searchParams.get('countOnly') === '1') {
+    const unreadCount = await (
+      await import('../../../../core/notifications/service')
+    ).countUnreadNotificationsFast(auth.user.id, auth.user.roleCode);
+    return jsonSuccess({ items: [], unreadCount, reports: [] });
+  }
+  const summaryOnly = url.searchParams.get('summary') === '1';
+  const result = await listUserNotifications(auth.user.id, auth.user.roleCode, { summaryOnly });
   return jsonSuccess(result);
 }
 

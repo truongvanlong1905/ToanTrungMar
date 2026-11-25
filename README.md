@@ -1,6 +1,6 @@
 # Toàn Trung V2 — Hệ thống nội bộ Marketing và Kinh doanh
 
-Monorepo Next.js + Prisma. Core (đăng nhập, phân quyền 8 vai trò BA, tài khoản, hồ sơ, thông báo, cài đặt thương hiệu) đã chạy; 5 module nghiệp vụ đang trống chờ 5 nhóm.
+Monorepo Next.js + Prisma. Toàn bộ Core (đăng nhập, phân quyền 8 vai trò BA, tài khoản, hồ sơ, thông báo, cài đặt thương hiệu) và **5 module nghiệp vụ (`01-leads` → `05-ai-design`)** đã được triển khai hoàn chỉnh theo đặc tả BA.
 
 ## Chạy nhanh
 
@@ -12,7 +12,6 @@ npm run db:seed
 npm run dev        # http://localhost:3000
 ```
 
-Tài khoản demo (chỉ môi trường dev): `admin@toantrung.vn`, `sales@toantrung.vn`, `marketing@toantrung.vn`, `designer@toantrung.vn` — mật khẩu `ToanTrung@2026`.
 
 ## Cấu trúc
 
@@ -40,7 +39,7 @@ Tài khoản demo (chỉ môi trường dev): `admin@toantrung.vn`, `sales@toant
 | Ma trận quyền 8 vai trò + đăng nhập | [docs/PERMISSIONS.md](docs/PERMISSIONS.md) |
 | Quy ước API/contract giữa nhóm | [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md) |
 | An toàn dữ liệu | [docs/DATA_SAFETY.md](docs/DATA_SAFETY.md) |
-| Giao diện/thương hiệu | [docs/UI_GUIDELINES.md](docs/UI_GUIDELINES.md), [design brief](docs/design/ToanTrung_Antigravity_Design_Brief/START_HERE.md) |
+| Giao diện/thương hiệu | [docs/UI_GUIDELINES.md](docs/UI_GUIDELINES.md) *(gói design brief lưu cục bộ ngoài Git)* |
 | Database (ERD, từ điển, owner bảng) | [docs/database/README.md](docs/database/README.md) |
 | Việc chưa chốt với BA | [docs/decisions/OPEN_QUESTIONS.md](docs/decisions/OPEN_QUESTIONS.md) |
-| Ảnh/PDF BA gốc | [docs/sources/README.md](docs/sources/README.md) |
+| Báo cáo & tài liệu BA gốc | Lưu cục bộ ngoài Git (`TOAN_TRUNG_TAI_LIEU_VA_BAO_CAO_LOCAL/`) & Kho dữ liệu chung trên CRM |

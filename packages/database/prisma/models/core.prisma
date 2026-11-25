@@ -97,6 +97,8 @@ model Notification {
   user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@index([userId, isRead, category, title])
   @@map("notifications")
 }
 
@@ -143,6 +145,8 @@ model AuditLog {
 
   @@index([actorUserId])
   @@index([createdAt])
+  @@index([targetType, createdAt])
+  @@index([targetType, actorUserId, createdAt])
   @@map("audit_logs")
 }
 

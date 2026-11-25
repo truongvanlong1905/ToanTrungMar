@@ -115,7 +115,6 @@ export const ROLE_PERMISSION_MATRIX: Record<RoleCode, readonly BaPermissionKey[]
     'LEAD_UPDATE_PIPELINE',
     'LEAD_REASSIGN',
     'ATTACHMENT_UPLOAD_VIEW',
-    'TRACKING_ADS_OPTIMIZE',
     'DASHBOARD_VIEW',
     'EXPORT_DATA',
   ],
@@ -143,6 +142,7 @@ export function hasBaPermission(role: RoleCode, permission: BaPermissionKey): bo
  * Standard API Envelopes (docs/API_CONTRACTS.md)
  */
 export interface ApiSuccess<T, M = Record<string, unknown>> {
+  ok: true;
   data: T;
   meta?: M;
 }
@@ -180,6 +180,7 @@ export interface SessionUserDto {
   email: string;
   phone: string | null;
   avatarUrl: string | null;
+  coverUrl?: string | null;
   roleCode: RoleCode;
   roleName: string;
   department: DepartmentCode;
@@ -205,6 +206,8 @@ export const UpdateProfileSchema = z
       .nullable()
       .optional(),
     removeAvatar: z.boolean().optional(),
+    removeCover: z.boolean().optional(),
+    coverPreset: z.string().trim().max(120).optional(),
   })
   .strict();
 
@@ -258,6 +261,7 @@ export interface AdminUserDto {
   email: string;
   phone: string | null;
   avatarUrl: string | null;
+  coverUrl?: string | null;
   roleId: number;
   roleCode: RoleCode;
   roleName: string;
@@ -265,6 +269,17 @@ export interface AdminUserDto {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TeamDirectoryMemberDto {
+  id: number;
+  fullName: string;
+  roleCode: RoleCode;
+  roleName: string;
+  department: DepartmentCode;
+  avatarUrl: string | null;
+  coverUrl: string | null;
+  isActive: boolean;
 }
 
 export const CreateUserSchema = z.object({
@@ -432,6 +447,9 @@ export function toMonetaryAmountDto(
 
 /**
  * Shared BA Lead Tier Predicates (L1 / L2 / L3) — Single Source of Truth for M02 & M04
+ * - L1: Tổng Lead thu nhận (mọi Lead)
+ * - L2: Lead hợp lệ (!isSpam)
+ * - L3: Lead hiệu quả truyền về Ads / tính CPL (UC03 BR6: trừ Spam tự động auto_excluded & Spam đã xác nhận confirmed_excluded)
  */
 export function isL2Valid(lead: { isSpam: boolean }): boolean {
   return !lead.isSpam;
@@ -440,11 +458,13 @@ export function isL2Valid(lead: { isSpam: boolean }): boolean {
 export function isL3Effective(lead: {
   isSpam: boolean;
   spamAdsExclusionStatus?: string | null;
+  tracking?: { isRepeatLead?: boolean | null } | null;
 }): boolean {
   return (
-    !lead.isSpam ||
-    (lead.spamAdsExclusionStatus !== 'auto_excluded' &&
-      lead.spamAdsExclusionStatus !== 'confirmed_excluded')
+    !lead.isSpam &&
+    lead.spamAdsExclusionStatus !== 'auto_excluded' &&
+    lead.spamAdsExclusionStatus !== 'confirmed_excluded' &&
+    !lead.tracking?.isRepeatLead
   );
 }
 
@@ -454,175 +474,24 @@ export function getL2PrismaWhere() {
 
 export function getL3PrismaWhere() {
   return {
+    isSpam: false,
+    spamAdsExclusionStatus: {
+      notIn: ['auto_excluded', 'confirmed_excluded'],
+    },
     OR: [
-      { isSpam: false },
-      {
-        spamAdsExclusionStatus: {
-          notIn: ['auto_excluded', 'confirmed_excluded'],
-        },
-      },
+      { tracking: { is: null } },
+      { tracking: { isRepeatLead: false } },
     ],
   };
 }
 
-export const REPORT_PRESETS = ['7d', '30d', 'all', 'custom'] as const;
-export type ReportPreset = (typeof REPORT_PRESETS)[number];
+export * from '../01-leads';
+export * from '../02-tracking-sync';
+export * from '../03-keywords-ads';
+export * from './dashboard-overview';
+export * from '../05-ai-design';
 
-export interface SalesPerformanceRowDto {
-  salesUserId: number;
-  salesFullName: string;
-  isOnline: boolean;
-  isReceivingLeads: boolean;
-  totalLeads: number;
-  newLeads: number;
-  quotingLeads: number;
-  quoteSentLeads: number;
-  wonLeads: number;
-  lostLeads: number;
-  unansweredOverdue7d: number;
-  winRateText: string;
-}
 
-export interface ProductInsightRowDto {
-  productId: number;
-  productCode: string;
-  productName: string;
-  category: 'MAN_HINH_LED' | 'BANG_DIEN_TU' | 'KHAC';
-  inquiryCount: number;
-  wonCount: number;
-}
 
-export interface UnansweredQuoteItemDto {
-  leadId: number;
-  leadCode: string;
-  companyOrContact: string;
-  phone: string;
-  assignedSalesName: string;
-  quoteSentAt: string;
-  daysWaiting: number;
-  isOverdue7Days: boolean;
-  productSummary: string;
-}
-
-export interface DetailedReportLeadRowDto {
-  stt: number;
-  leadCode: string;
-  receivedAt: string;
-  assignedSalesName: string;
-  companyOrCustomer: string;
-  phone: string;
-  contactChannel: string;
-  marketingSource: string;
-  productsText: string;
-  pipelineStatusLabel: string;
-  noteOrReason: string;
-  isAnonymized: boolean;
-}
-
-export interface ActionableTaskItemDto {
-  id:
-    | 'unaccepted_leads'
-    | 'overdue_quotes'
-    | 'pending_designs'
-    | 'seo_approvals'
-    | 'publication_failures'
-    | 'sync_failures';
-  title: string;
-  description: string;
-  count: number;
-  severity: 'critical' | 'warning' | 'info';
-  moduleLabel: string;
-  href: string;
-}
-
-export interface MarketingSourcePerformanceRowDto {
-  key: string;
-  sourceName: string;
-  campaignName: string;
-  spend: MonetaryAmountDto | null;
-  platformConversions: number;
-  crmLeadsL1: number;
-  crmValidL2: number;
-  crmEffectiveL3: number;
-  wonCount: number;
-}
-
-export interface LeadTrendPointDto {
-  date: string;
-  label: string;
-  totalL1: number;
-  validL2: number;
-  wonCount: number;
-}
-
-export interface ReportsDashboardDto {
-  scopeRole: string;
-  scopeDescription: string;
-  preset: ReportPreset;
-  fromDate: string;
-  toDate: string;
-  generatedAt: string;
-  isSmallSample: boolean;
-  smallSampleNotice: string | null;
-  todayPreliminaryNotice: string;
-  lastSyncedAt: string | null;
-  overview: {
-    totalLeadsL1: number;
-    validLeadsL2: number;
-    effectiveLeadsL3: number;
-    activeLeadsCount: number;
-    unreceivedLeadsCount: number;
-    newLeadCount: number;
-    quotingCount: number;
-    quoteSentCount: number;
-    wonCount: number;
-    lostCount: number;
-    unansweredQuoteCount: number;
-    overdue7DaysQuoteCount: number;
-    winRateText: string;
-  };
-  leadTrend: LeadTrendPointDto[];
-  actionableTasks: ActionableTaskItemDto[];
-  byChannel: Array<{
-    channel: string;
-    label: string;
-    count: number;
-  }>;
-  salesPerformance: SalesPerformanceRowDto[];
-  productInsights: ProductInsightRowDto[];
-  unansweredQuotes: UnansweredQuoteItemDto[];
-  marketingSummary: {
-    totalAdsSpend: MonetaryAmountDto | null;
-    platformReportedConversions: number;
-    effectiveLeadsFromAds: number;
-    cplEffective: MonetaryAmountDto | null;
-    publishedSeoArticles: number;
-    draftSeoArticles: number;
-    scheduledSeoArticles: number;
-    failedPublishArticles: number;
-    optimizationNeededArticles: number;
-    bySourceCampaign: MarketingSourcePerformanceRowDto[];
-  };
-  trackingOperationalSummary: {
-    liveIntegrationMode: boolean;
-    configuredConnectionsCount: number;
-    totalConnectionsCount: number;
-    openAlertsCount: number;
-    failingConnectionsCount: number;
-    gclidPendingRetryCount: number;
-    wordpressConfigured: boolean;
-    geminiConfigured: boolean;
-  };
-  designSummary: {
-    totalRequests: number;
-    pendingCount: number;
-    inReviewCount: number;
-    completed3dCount: number;
-    completedBannerCount: number;
-    avgProcessingSecText: string;
-    totalAiTokens: number;
-    totalAiCost: MonetaryAmountDto | null;
-  };
-  detailedLeads: DetailedReportLeadRowDto[];
-}
-
+export * from './ui-vocabulary';
+export * from './dashboard-spec';

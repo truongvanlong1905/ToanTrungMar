@@ -20,6 +20,7 @@ import {
   Trash2,
   User,
   UserCheck,
+  Users,
   X,
 } from 'lucide-react';
 import {
@@ -27,8 +28,9 @@ import {
   DEPARTMENT_LABELS,
   hasBaPermission,
   type BaPermissionKey,
+  type TeamDirectoryMemberDto,
 } from '@toantrung/contracts';
-import { apiRequest, ApiClientError } from '@/core/http/client';
+import { apiRequest, ApiClientError, clearAllApiCache } from '@/core/http/client';
 import { useSession } from '@/core/session/SessionContext';
 import { getInitials } from '@/core/layout/WorkspaceShell';
 import { ChangePasswordDialog } from '@/core/components/ChangePasswordDialog';
@@ -67,6 +69,7 @@ export default function ProfilePage() {
   const [pendingAvatarFile, setPendingAvatarFile] = useState<File | null>(null);
   const [pendingAvatarPreview, setPendingAvatarPreview] = useState<string | null>(null);
   const [removeAvatarFlag, setRemoveAvatarFlag] = useState(false);
+  const [teamMembers, setTeamMembers] = useState<TeamDirectoryMemberDto[]>([]);
 
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileMsg, setProfileMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -74,8 +77,45 @@ export default function ProfilePage() {
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(true);
   const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false);
   const [toastNotice, setToastNotice] = useState<string | null>(null);
+  const [activeSessions, setActiveSessions] = useState<
+    Array<{
+      id: string;
+      isCurrent: boolean;
+      ipAddress: string;
+      userAgent: string;
+      createdAt: string;
+      expiresAt: string;
+    }>
+  >([]);
 
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadTeamDirectory = async (force = false) => {
+    try {
+      const [res, profileRes] = await Promise.all([
+        apiRequest<{ members: TeamDirectoryMemberDto[] }>(
+          '/api/v1/users?scope=directory',
+          { skipCache: force },
+        ),
+        apiRequest<{
+          activeSessions?: Array<{
+            id: string;
+            isCurrent: boolean;
+            ipAddress: string;
+            userAgent: string;
+            createdAt: string;
+            expiresAt: string;
+          }>;
+        }>('/api/v1/profile', { skipCache: force }),
+      ]);
+      setTeamMembers(res.members || []);
+      if (profileRes.activeSessions) {
+        setActiveSessions(profileRes.activeSessions);
+      }
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     if (user) {
@@ -84,6 +124,7 @@ export default function ProfilePage() {
       setPendingAvatarFile(null);
       setPendingAvatarPreview(null);
       setRemoveAvatarFlag(false);
+      void loadTeamDirectory(false);
     }
   }, [user]);
 
@@ -108,6 +149,9 @@ export default function ProfilePage() {
   const handleSelectAvatar = (file: File | undefined) => {
     if (!file) return;
     setProfileMsg(null);
+    if (pendingAvatarPreview) {
+      URL.revokeObjectURL(pendingAvatarPreview);
+    }
     const previewUrl = URL.createObjectURL(file);
     setPendingAvatarFile(file);
     setPendingAvatarPreview(previewUrl);
@@ -116,6 +160,9 @@ export default function ProfilePage() {
 
   const handleMarkRemoveAvatar = () => {
     setProfileMsg(null);
+    if (pendingAvatarPreview) {
+      URL.revokeObjectURL(pendingAvatarPreview);
+    }
     setPendingAvatarFile(null);
     setPendingAvatarPreview(null);
     setRemoveAvatarFlag(true);
@@ -127,6 +174,9 @@ export default function ProfilePage() {
   const handleCancelProfileDraft = () => {
     setFullName(user.fullName);
     setPhone(user.phone || '');
+    if (pendingAvatarPreview) {
+      URL.revokeObjectURL(pendingAvatarPreview);
+    }
     setPendingAvatarFile(null);
     setPendingAvatarPreview(null);
     setRemoveAvatarFlag(false);
@@ -145,7 +195,7 @@ export default function ProfilePage() {
         const formData = new FormData();
         formData.append('fullName', fullName.trim());
         formData.append('phone', phone.trim());
-        formData.append('removeAvatar', 'false');
+        formData.append('removeAvatar', removeAvatarFlag ? 'true' : 'false');
         formData.append('avatar', pendingAvatarFile);
 
         await apiRequest('/api/v1/profile', {
@@ -166,15 +216,17 @@ export default function ProfilePage() {
         });
       }
 
+      clearAllApiCache();
       await refreshSession();
+      await loadTeamDirectory(true);
       setPendingAvatarFile(null);
       setPendingAvatarPreview(null);
       setRemoveAvatarFlag(false);
       setProfileMsg({
         type: 'ok',
-        text: 'Đã lưu thay đổi hồ sơ tài khoản thành công.',
+        text: 'Đã lưu hồ sơ & ảnh đại diện (đồng bộ hiển thị tới toàn bộ thành viên).',
       });
-      setToastNotice('Đã cập nhật thông tin hồ sơ cá nhân thành công.');
+      setToastNotice('Đã cập nhật hồ sơ & đồng bộ ảnh đại diện cho toàn bộ đồng nghiệp.');
     } catch (err) {
       setProfileMsg({
         type: 'err',
@@ -215,113 +267,179 @@ export default function ProfilePage() {
       )}
 
       {/* =========================================================================
-          EXECUTIVE HEADER CARD (Fix 5)
+          PROFILE HEADER CARD — CHỈ DÙNG ẢNH ĐẠI DIỆN HÌNH TRÒN
       ========================================================================= */}
-      <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        {/* Top Banner: Elegant gradient cover */}
-        <div className="h-36 bg-gradient-to-r from-blue-700 via-blue-600 to-indigo-800 relative">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.22),transparent_60%)]" />
-          <div className="absolute top-4 right-5 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/15 backdrop-blur-md border border-white/25 text-white text-xs font-semibold">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Đang hoạt động</span>
-          </div>
-        </div>
-
-        {/* Profile Info Row placed neatly next to the Avatar */}
-        <div className="px-6 pb-6">
-          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-            <div className="flex flex-col sm:flex-row sm:items-end gap-5">
-              {/* Large Circular Avatar with Camera Upload Badge */}
-              <div className="w-24 h-24 rounded-full ring-4 ring-white shadow-lg bg-blue-100 text-blue-800 text-2xl font-bold flex items-center justify-center -mt-12 ml-0 sm:ml-2 z-10 relative shrink-0">
-                {displayedAvatarUrl ? (
-                  <img
-                    src={displayedAvatarUrl}
-                    alt={fullName || user.fullName}
-                    className="w-full h-full rounded-full object-cover"
-                  />
-                ) : (
-                  <span>{getInitials(fullName || user.fullName)}</span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => avatarInputRef.current?.click()}
-                  title="Tải lên hoặc đổi ảnh đại diện"
-                  className="absolute bottom-0 right-0 w-8 h-8 rounded-full bg-blue-600 hover:bg-blue-700 text-white ring-2 ring-white shadow-md flex items-center justify-center transition-colors"
-                >
-                  <Camera className="w-3.5 h-3.5" />
-                </button>
-                <input
-                  ref={avatarInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(e) => handleSelectAvatar(e.target.files?.[0])}
-                  className="hidden"
+      <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 sm:p-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-5">
+            {/* Circular Avatar Only + Camera Badge */}
+            <div className="w-20 h-20 rounded-full ring-4 ring-slate-100 shadow-sm bg-blue-100 text-blue-800 text-xl font-bold flex items-center justify-center relative shrink-0">
+              {displayedAvatarUrl ? (
+                <img
+                  src={displayedAvatarUrl}
+                  alt={fullName || user.fullName}
+                  className="w-full h-full rounded-full object-cover"
                 />
-              </div>
-
-              {/* Name, Badges & Sub-details */}
-              <div className="pt-2 sm:pt-3 space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-                    {fullName || user.fullName}
-                  </h1>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-semibold">
-                    <BadgeCheck className="w-3.5 h-3.5 text-blue-600" />
-                    <span>{user.roleName}</span>
-                  </span>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-xs font-medium">
-                    <Building2 className="w-3 h-3 text-slate-500" />
-                    <span>{departmentLabel}</span>
-                  </span>
-                </div>
-
-                <p className="text-xs text-slate-500 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                  <span>
-                    Mã NV: <strong className="font-mono text-slate-700">{employeeCode}</strong>
-                  </span>
-                  <span>·</span>
-                  <span>
-                    Email: <strong className="text-slate-700">{user.email}</strong>
-                  </span>
-                  <span>·</span>
-                  <span>
-                    Ngày gia nhập: <strong className="text-slate-700">{joiningDate}</strong>
-                  </span>
-                </p>
-
-                {pendingAvatarFile && (
-                  <p className="text-xs font-semibold text-blue-600">
-                    Ảnh đại diện mới đã chọn ({pendingAvatarFile.name}) — Nhấn &ldquo;Lưu thông tin&rdquo; ở thẻ bên dưới để áp dụng.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Right Action: Clean "Đổi mật khẩu" button */}
-            <div className="flex items-center gap-2.5 self-start md:self-end pt-2 md:pt-0">
-              {(displayedAvatarUrl || user.avatarUrl) && !removeAvatarFlag && (
-                <button
-                  type="button"
-                  onClick={handleMarkRemoveAvatar}
-                  className="px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-red-50 hover:border-red-200 text-slate-600 hover:text-red-600 text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Gỡ ảnh</span>
-                </button>
+              ) : (
+                <span>{getInitials(fullName || user.fullName)}</span>
               )}
-
               <button
                 type="button"
-                onClick={() => setIsPasswordDialogOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm font-medium text-xs transition-colors"
+                onClick={() => avatarInputRef.current?.click()}
+                title="Tải lên hoặc đổi ảnh đại diện hình tròn"
+                aria-label="Đổi ảnh đại diện hình tròn"
+                className="absolute -bottom-0.5 -right-0.5 w-7 h-7 rounded-full bg-blue-600 hover:bg-blue-700 text-white ring-2 ring-white shadow-sm flex items-center justify-center transition-colors"
               >
-                <KeyRound className="w-4 h-4" />
-                <span>Đổi mật khẩu</span>
+                <Camera className="w-3.5 h-3.5" />
               </button>
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => handleSelectAvatar(e.target.files?.[0])}
+                className="hidden"
+              />
             </div>
+
+            {/* Name, Badges & Sub-details */}
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                  {fullName || user.fullName}
+                </h1>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  <span>Đang hoạt động</span>
+                </span>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-semibold">
+                  <BadgeCheck className="w-3.5 h-3.5 text-blue-600" />
+                  <span>{user.roleName}</span>
+                </span>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-xs font-medium">
+                  <Building2 className="w-3 h-3 text-slate-500" />
+                  <span>{departmentLabel}</span>
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-500 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                <span>
+                  Mã NV: <strong className="font-mono text-slate-700">{employeeCode}</strong>
+                </span>
+                <span>·</span>
+                <span>
+                  Email: <strong className="text-slate-700">{user.email}</strong>
+                </span>
+                <span>·</span>
+                <span>
+                  Ngày gia nhập: <strong className="text-slate-700">{joiningDate}</strong>
+                </span>
+              </p>
+
+              {pendingAvatarFile && (
+                <div className="pt-1 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-blue-700">
+                    Đã chọn ảnh đại diện mới ({pendingAvatarFile.name}) — bấm áp dụng để đồng bộ:
+                  </span>
+                  <button
+                    type="button"
+                    disabled={savingProfile}
+                    onClick={(e) => void handleSaveProfile(e as unknown as React.FormEvent)}
+                    className="h-7 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1 shadow-2xs"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{savingProfile ? 'Đang lưu...' : 'Áp dụng ảnh mới'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right Actions: Đổi ảnh đại diện & Gỡ ảnh */}
+          <div className="flex flex-wrap items-center gap-2 self-start md:self-center">
+            <button
+              type="button"
+              onClick={() => avatarInputRef.current?.click()}
+              className="px-3.5 py-2 rounded-lg border border-blue-200 bg-blue-50/70 hover:bg-blue-100 text-blue-700 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>Đổi ảnh đại diện</span>
+            </button>
+            {(displayedAvatarUrl || user.avatarUrl) && !removeAvatarFlag && (
+              <button
+                type="button"
+                onClick={handleMarkRemoveAvatar}
+                className="px-3.5 py-2 rounded-lg border border-slate-200 bg-white hover:bg-red-50 hover:border-red-200 text-slate-600 hover:text-red-600 text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Gỡ ảnh</span>
+              </button>
+            )}
           </div>
         </div>
       </section>
+
+      {/* DANH SÁCH THÀNH VIÊN: Đồng bộ ảnh đại diện hình tròn giữa các tài khoản */}
+      {teamMembers.length > 0 && (
+        <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-5 space-y-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-700 grid place-items-center shrink-0">
+                <Users className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  Không gian Đồng nghiệp Toàn Trung ({teamMembers.length} thành viên)
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Khi thành viên đổi ảnh đại diện, các tài khoản còn lại đều thấy đồng bộ trực tiếp tại đây
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {teamMembers.map((m) => {
+              const isMe = m.id === user.id;
+              const liveAvatar = isMe ? displayedAvatarUrl : m.avatarUrl;
+              return (
+                <div
+                  key={m.id}
+                  className="rounded-xl border border-slate-200/90 bg-slate-50/50 hover:bg-white p-3 flex items-center justify-between gap-3 transition"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="relative shrink-0">
+                      <div className="w-11 h-11 rounded-full ring-2 ring-white bg-blue-100 text-blue-800 font-bold text-xs flex items-center justify-center overflow-hidden shadow-xs">
+                        {liveAvatar ? (
+                          <img
+                            src={liveAvatar}
+                            alt={m.fullName}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <span>{getInitials(m.fullName)}</span>
+                        )}
+                      </div>
+                      <span
+                        title="Đang hoạt động"
+                        className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-900 truncate">{m.fullName}</p>
+                      <p className="text-[11px] text-slate-500 truncate">{m.roleName}</p>
+                    </div>
+                  </div>
+                  {isMe && (
+                    <span className="px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-[#0F275C] text-[10px] font-bold shrink-0">
+                      Bạn
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* =========================================================================
           BODY CONTENT: 2-COLUMN BALANCED GRID BELOW THE HEADER (Fix 5)
@@ -533,20 +651,11 @@ export default function ProfilePage() {
 
             {/* Quick Password Reset Card with Functioning Dialog Trigger (Fix 1) */}
             <div className="p-4 rounded-xl bg-slate-50/70 border border-slate-200/90 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Lock className="w-4 h-4 text-blue-700" />
-                  <strong className="text-xs font-bold text-slate-900">
-                    Mật khẩu đăng nhập
-                  </strong>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsPasswordDialogOpen(true)}
-                  className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline transition-colors"
-                >
-                  Mở hộp thoại đổi mật khẩu
-                </button>
+              <div className="flex items-center gap-2">
+                <Lock className="w-4 h-4 text-blue-700" />
+                <strong className="text-xs font-bold text-slate-900">
+                  Mật khẩu đăng nhập
+                </strong>
               </div>
               <p className="text-xs text-slate-500 leading-relaxed">
                 Khi đổi mật khẩu mới, toàn bộ các phiên đăng nhập cũ trên thiết bị khác sẽ tự động
@@ -608,47 +717,73 @@ export default function ProfilePage() {
                 <strong className="text-xs font-bold text-slate-900">
                   Phiên đăng nhập đang hoạt động
                 </strong>
-                <span className="text-[11px] font-semibold text-emerald-700">2 thiết bị</span>
+                <span className="text-[11px] font-semibold text-emerald-700">
+                  {activeSessions.length || 1} thiết bị
+                </span>
               </div>
 
               <div className="space-y-2 text-xs">
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-700 grid place-items-center shrink-0">
-                      <Laptop className="w-4 h-4" />
+                {(activeSessions.length > 0
+                  ? activeSessions
+                  : [
+                      {
+                        id: 'current',
+                        isCurrent: true,
+                        ipAddress: 'IP Nội bộ Toàn Trung',
+                        userAgent: 'Windows Workstation · Trình duyệt Web',
+                        createdAt: new Date().toISOString(),
+                        expiresAt: new Date().toISOString(),
+                      },
+                    ]
+                ).map((sess) => {
+                  const isMobile = /mobile|iphone|ipad|android/i.test(sess.userAgent);
+                  return (
+                    <div
+                      key={sess.id}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${
+                        sess.isCurrent
+                          ? 'bg-slate-50 border-slate-200/80'
+                          : 'bg-white border-slate-200/70'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div
+                          className={`w-8 h-8 rounded-lg grid place-items-center shrink-0 ${
+                            sess.isCurrent
+                              ? 'bg-blue-50 text-blue-700'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {isMobile ? (
+                            <Smartphone className="w-4 h-4" />
+                          ) : (
+                            <Laptop className="w-4 h-4" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-900 truncate">
+                            {sess.userAgent.length > 52
+                              ? `${sess.userAgent.slice(0, 52)}…`
+                              : sess.userAgent}
+                          </p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {sess.ipAddress} · Đăng nhập:{' '}
+                            {new Date(sess.createdAt).toLocaleString('vi-VN')}
+                          </p>
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
+                          sess.isCurrent
+                            ? 'bg-emerald-50 border border-emerald-200 text-emerald-700'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {sess.isCurrent ? 'Phiên hiện tại' : 'Đã xác thực'}
+                      </span>
                     </div>
-                    <div className="min-w-0">
-                      <p className="font-bold text-slate-900 truncate">
-                        Windows Workstation · Chrome Desktop
-                      </p>
-                      <p className="text-[11px] text-slate-500 truncate">
-                        TP. Hồ Chí Minh · IP Nội bộ Toàn Trung · Vừa xong
-                      </p>
-                    </div>
-                  </div>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold shrink-0">
-                    Phiên hiện tại
-                  </span>
-                </div>
-
-                <div className="p-3 rounded-xl bg-white border border-slate-200/70 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 grid place-items-center shrink-0">
-                      <Smartphone className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="font-semibold text-slate-800 truncate">
-                        Toàn Trung Mobile Web · Safari iOS
-                      </p>
-                      <p className="text-[11px] text-slate-400 truncate">
-                        TP. Hồ Chí Minh · Đồng bộ thông báo đẩy
-                      </p>
-                    </div>
-                  </div>
-                  <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-semibold shrink-0">
-                    Đã xác thực
-                  </span>
-                </div>
+                  );
+                })}
               </div>
             </div>
           </div>

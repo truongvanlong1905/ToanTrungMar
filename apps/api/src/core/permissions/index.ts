@@ -5,7 +5,7 @@ import {
   type SessionUserDto,
 } from '@toantrung/contracts';
 import { APP_CONFIG } from '../config';
-import { jsonError } from '../http';
+import { jsonError, safeSecretEquals } from '../http';
 import { resolveSessionFromToken } from '../auth/service';
 
 export function extractSessionTokenFromRequest(req?: Request): string | null {
@@ -51,7 +51,7 @@ export async function requireAuthenticatedSession(
   const checkCsrf = options.requireCsrf ?? isMutation;
   if (checkCsrf) {
     const csrfHeader = req.headers.get(APP_CONFIG.csrfHeaderName);
-    if (!csrfHeader || csrfHeader !== resolved.user.csrfToken) {
+    if (!safeSecretEquals(csrfHeader, resolved.user.csrfToken)) {
       return {
         ok: false,
         response: jsonError(

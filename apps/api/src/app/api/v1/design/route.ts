@@ -1,0 +1,259 @@
+import {
+  ConfigureAiProvidersSchema,
+  CreateDesignRequestSchema,
+  MarketingBriefSubmitSchema,
+  ProbeModelCapabilitySchema,
+  RefreshModelRegistrySchema,
+  hasBaPermission,
+  type AiProviderId,
+} from '@toantrung/contracts';
+import { prisma } from '@toantrung/database';
+import { jsonError, jsonSuccess } from '../../../../core/http';
+import { requireAuthenticatedSession } from '../../../../core/permissions';
+import { AiDesignProviderFactory } from '../../../../modules/05-ai-design/providers';
+import {
+  configureAiProviders,
+  createDesignRequestWithAiDraft,
+  createMarketingDesignBrief,
+  deleteDesignProject,
+  listDesignRequestsForUser,
+} from '../../../../modules/05-ai-design/service';
+
+export async function GET(req: Request) {
+  const auth = await requireAuthenticatedSession(req);
+  if (!auth.ok) return auth.response;
+
+  const canViewDesign =
+    hasBaPermission(auth.user.roleCode, 'AI_DESIGN') ||
+    hasBaPermission(auth.user.roleCode, 'ATTACHMENT_UPLOAD_VIEW');
+  if (!canViewDesign) {
+    return jsonError(
+      'FORBIDDEN_PERMISSION',
+      'Tài khoản không có quyền truy cập danh sách dự án thiết kế và bản vẽ.',
+      403
+    );
+  }
+
+  try {
+    const url = new URL(req.url);
+    const pageParam = url.searchParams.get('page');
+    const pageSizeParam = url.searchParams.get('pageSize');
+    const page = pageParam ? Math.max(1, Number(pageParam) || 1) : undefined;
+    const pageSize = pageSizeParam ? Math.max(1, Number(pageSizeParam) || 100) : undefined;
+    const data = await listDesignRequestsForUser(auth.user, { page, pageSize });
+    return jsonSuccess(data);
+  } catch (err) {
+    return jsonError(
+      'DESIGN_LIST_FAILED',
+      err instanceof Error ? err.message : 'Không thể tải danh sách yêu cầu thiết kế AI.',
+      500
+    );
+  }
+}
+
+export async function POST(req: Request) {
+  const auth = await requireAuthenticatedSession(req);
+  if (!auth.ok) return auth.response;
+
+  try {
+    const raw = (await req.json()) as Record<string, unknown>;
+
+    if (raw.action === 'test_ai_connection') {
+      if (
+        !hasBaPermission(auth.user.roleCode, 'AI_DESIGN') &&
+        !hasBaPermission(auth.user.roleCode, 'SYSTEM_USER_ADMIN')
+      ) {
+        return jsonError(
+          'FORBIDDEN_PERMISSION',
+          'Tài khoản không có quyền kiểm tra kết nối nhà cung cấp AI.',
+          403
+        );
+      }
+      const testRes = await AiDesignProviderFactory.testProviderConnection({
+        providerId: (raw.providerId as AiProviderId) || 'google_imagen',
+        apiKey: typeof raw.apiKey === 'string' ? raw.apiKey : null,
+        apiEndpoint: typeof raw.apiEndpoint === 'string' ? raw.apiEndpoint : null,
+        modelId: typeof raw.modelId === 'string' ? raw.modelId : null,
+      });
+      return jsonSuccess(testRes);
+    }
+
+    if (raw.action === 'refresh_model_registry') {
+      if (!hasBaPermission(auth.user.roleCode, 'SYSTEM_USER_ADMIN')) {
+        return jsonError(
+          'FORBIDDEN_PERMISSION',
+          'Chỉ Quản trị hệ thống mới được làm mới danh mục Model AI toàn cục.',
+          403
+        );
+      }
+      const parsedRefresh = RefreshModelRegistrySchema.safeParse(raw);
+      if (!parsedRefresh.success) {
+        return jsonError(
+          'VALIDATION_ERROR',
+          parsedRefresh.error.issues[0]?.message || 'Tham số làm mới danh mục Model không hợp lệ.',
+          400
+        );
+      }
+      const modelRegistry = await AiDesignProviderFactory.getModelRegistry(
+        true,
+        parsedRefresh.data.providerId
+      );
+      return jsonSuccess({ ok: true, modelRegistry });
+    }
+
+    if (raw.action === 'probe_model_capability') {
+      if (
+        !hasBaPermission(auth.user.roleCode, 'AI_DESIGN') &&
+        !hasBaPermission(auth.user.roleCode, 'SYSTEM_USER_ADMIN')
+      ) {
+        return jsonError(
+          'FORBIDDEN_PERMISSION',
+          'Chỉ Quản trị viên hoặc Designer mới được kiểm tra khả năng thực thi model (Probe).',
+          403
+        );
+      }
+      const parsedProbe = ProbeModelCapabilitySchema.safeParse(raw);
+      if (!parsedProbe.success) {
+        return jsonError(
+          'VALIDATION_ERROR',
+          parsedProbe.error.issues[0]?.message || 'Thông số probe model không hợp lệ.',
+          400
+        );
+      }
+      const probeResult = await AiDesignProviderFactory.probeModelCapability(
+        parsedProbe.data.providerId,
+        parsedProbe.data.modelId,
+        parsedProbe.data.taskCode
+      );
+      return jsonSuccess(probeResult);
+    }
+
+    if (raw.action === 'submit_marketing_brief') {
+      const canSubmitBrief =
+        hasBaPermission(auth.user.roleCode, 'AI_DESIGN') ||
+        hasBaPermission(auth.user.roleCode, 'TRACKING_ADS_OPTIMIZE') ||
+        hasBaPermission(auth.user.roleCode, 'AI_MARKETING_SEO');
+      if (!canSubmitBrief) {
+        return jsonError(
+          'FORBIDDEN_PERMISSION',
+          'Chỉ Marketing, Ads, Designer hoặc Quản trị viên mới được gửi Brief thiết kế từ số liệu Marketing.',
+          403
+        );
+      }
+      const parsedBrief = MarketingBriefSubmitSchema.safeParse(raw);
+      if (!parsedBrief.success) {
+        return jsonError(
+          'VALIDATION_ERROR',
+          parsedBrief.error.issues[0]?.message || 'Nội dung Brief thiết kế không hợp lệ.',
+          400
+        );
+      }
+      const briefRes = await createMarketingDesignBrief(auth.user, parsedBrief.data);
+      return jsonSuccess(briefRes, 201);
+    }
+
+    if (raw.action === 'configure_ai_providers') {
+      if (
+        !hasBaPermission(auth.user.roleCode, 'AI_DESIGN') &&
+        !hasBaPermission(auth.user.roleCode, 'SYSTEM_USER_ADMIN')
+      ) {
+        return jsonError(
+          'FORBIDDEN_PERMISSION',
+          'Chỉ Quản trị viên hoặc Designer mới có quyền cấu hình nhà cung cấp AI.',
+          403
+        );
+      }
+      const parsedCfg = ConfigureAiProvidersSchema.safeParse(raw);
+      if (!parsedCfg.success) {
+        return jsonError(
+          'VALIDATION_ERROR',
+          parsedCfg.error.issues[0]?.message || 'Cấu hình Đa AI không hợp lệ.',
+          400
+        );
+      }
+      const providerStatus = await configureAiProviders(auth.user, parsedCfg.data);
+      return jsonSuccess({ ok: true, providerStatus });
+    }
+
+    if (raw.action === 'bulk_delete_projects') {
+      if (!hasBaPermission(auth.user.roleCode, 'AI_DESIGN')) {
+        return jsonError(
+          'FORBIDDEN_PERMISSION',
+          'Tài khoản không có quyền xóa dự án thiết kế.',
+          403
+        );
+      }
+      const rawIds = Array.isArray(raw.projectIds) ? raw.projectIds : [];
+      const ids = rawIds
+        .map((v) => Number(v))
+        .filter((n) => Number.isInteger(n) && n > 0);
+      if (ids.length === 0) {
+        return jsonError('VALIDATION_ERROR', 'Vui lòng chọn ít nhất 1 dự án để xóa.', 400);
+      }
+      let deletedCount = 0;
+      for (const pid of ids) {
+        try {
+          await deleteDesignProject(auth.user, pid);
+          deletedCount += 1;
+        } catch {
+          // Skip projects already deleted or invalid
+        }
+      }
+      return jsonSuccess({ ok: true, deletedCount });
+    }
+
+    const parsed = CreateDesignRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return jsonError(
+        'VALIDATION_ERROR',
+        parsed.error.issues[0]?.message || 'Thông số yêu cầu thiết kế AI không hợp lệ.',
+        400
+      );
+    }
+
+    const canDirectAiDesign = hasBaPermission(auth.user.roleCode, 'AI_DESIGN');
+    const canRequestFromLead =
+      Boolean(parsed.data.leadId) &&
+      hasBaPermission(auth.user.roleCode, 'LEAD_UPDATE_PIPELINE') &&
+      hasBaPermission(auth.user.roleCode, 'ATTACHMENT_UPLOAD_VIEW');
+
+    if (!canDirectAiDesign && !canRequestFromLead) {
+      return jsonError(
+        'FORBIDDEN_PERMISSION',
+        'Tài khoản không có quyền tạo dự án thiết kế trực tiếp (cần quyền AI_DESIGN hoặc gửi Yêu cầu thiết kế từ hồ sơ Lead được phân quyền).',
+        403
+      );
+    }
+
+    if (!canDirectAiDesign && parsed.data.leadId) {
+      const lead = await prisma.lead.findUnique({
+        where: { id: parsed.data.leadId },
+        select: { id: true, assignedSalesId: true, createdByUserId: true },
+      });
+      if (!lead) {
+        return jsonError('LEAD_NOT_FOUND', 'Không tìm thấy hồ sơ Lead liên kết.', 404);
+      }
+      if (
+        auth.user.roleCode === 'SALES' &&
+        lead.assignedSalesId !== auth.user.id &&
+        lead.createdByUserId !== auth.user.id
+      ) {
+        return jsonError(
+          'FORBIDDEN_LEAD_SCOPE',
+          'Sales chỉ được gửi Yêu cầu thiết kế cho hồ sơ Lead mình phụ trách.',
+          403
+        );
+      }
+    }
+
+    const result = await createDesignRequestWithAiDraft(auth.user, parsed.data);
+    return jsonSuccess(result, 201);
+  } catch (err) {
+    return jsonError(
+      'DESIGN_CREATE_FAILED',
+      err instanceof Error ? err.message : 'Tạo yêu cầu thiết kế AI thất bại.',
+      400
+    );
+  }
+}
+

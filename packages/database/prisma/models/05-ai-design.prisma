@@ -41,6 +41,7 @@ model DesignRequest {
   @@index([requestedBySalesId])
   @@index([assignedDesignerId, designStatus])
   @@index([requestType, designStatus])
+  @@index([createdAt])
   @@map("design_requests")
 }
 

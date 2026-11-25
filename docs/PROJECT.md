@@ -1,6 +1,6 @@
 # Dự án Toàn Trung V2 — Phạm vi, nguồn BA và kiến trúc
 
-Gộp từ PROJECT, BA_HANDOVER và ARCHITECTURE cũ. Nguồn nghiệp vụ gốc: [sources](sources/README.md) và [ERD PDF](sources/assets/ba-erd.pdf).
+Gộp từ PROJECT, BA_HANDOVER và ARCHITECTURE cũ. Nguồn nghiệp vụ gốc (tài liệu BA & ERD PDF) được lưu cục bộ ngoài Git tại `TOAN_TRUNG_TAI_LIEU_VA_BAO_CAO_LOCAL/`.
 
 ## 1. Mục tiêu
 

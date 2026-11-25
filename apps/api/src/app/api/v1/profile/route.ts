@@ -1,3 +1,4 @@
+import { prisma } from '@toantrung/database';
 import { ChangePasswordSchema, UpdateProfileSchema } from '@toantrung/contracts';
 import { getClientIp, jsonError, jsonSuccess } from '../../../../core/http';
 import { requireAuthenticatedSession } from '../../../../core/permissions';
@@ -5,8 +6,10 @@ import { ImageValidationError } from '../../../../core/storage/image-validator';
 import {
   AuthServiceError,
   changeOwnPassword,
+  getUserCoverMap,
   updateOwnProfile,
   uploadOwnAvatar,
+  uploadOwnCover,
 } from '../../../../core/auth/service';
 
 const FORBIDDEN_PROFILE_FIELDS = ['id', 'userId', 'roleCode', 'roleId', 'department', 'email', 'isActive'] as const;
@@ -14,7 +17,33 @@ const FORBIDDEN_PROFILE_FIELDS = ['id', 'userId', 'roleCode', 'roleId', 'departm
 export async function GET(req: Request) {
   const auth = await requireAuthenticatedSession(req, { requireCsrf: false });
   if (!auth.ok) return auth.response;
-  return jsonSuccess({ user: auth.user });
+  const sessions = await prisma.userSession.findMany({
+    where: {
+      userId: auth.user.id,
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+    select: {
+      id: true,
+      ipAddress: true,
+      userAgent: true,
+      createdAt: true,
+      expiresAt: true,
+    },
+  });
+  return jsonSuccess({
+    user: auth.user,
+    activeSessions: sessions.map((s) => ({
+      id: s.id,
+      isCurrent: s.id === auth.sessionId,
+      ipAddress: s.ipAddress || 'IP Nội bộ Toàn Trung',
+      userAgent: s.userAgent || 'Trình duyệt Web',
+      createdAt: s.createdAt.toISOString(),
+      expiresAt: s.expiresAt.toISOString(),
+    })),
+  });
 }
 
 export async function PATCH(req: Request) {
@@ -44,11 +73,16 @@ export async function PATCH(req: Request) {
     const fullName = String(formData.get('fullName') ?? auth.user.fullName);
     const phone = String(formData.get('phone') ?? (auth.user.phone || ''));
     const removeAvatar = String(formData.get('removeAvatar') || '') === 'true';
+    const removeCover = String(formData.get('removeCover') || '') === 'true';
+    const coverPresetRaw = formData.get('coverPreset');
+    const coverPreset = typeof coverPresetRaw === 'string' && coverPresetRaw.trim() ? coverPresetRaw.trim() : undefined;
 
     const parsed = UpdateProfileSchema.safeParse({
       fullName,
       phone,
       removeAvatar,
+      removeCover,
+      coverPreset,
     });
     if (!parsed.success) {
       return jsonError(
@@ -59,6 +93,7 @@ export async function PATCH(req: Request) {
     }
 
     const avatarFile = formData.get('avatar');
+    const coverFile = formData.get('cover');
     let latestUser = await updateOwnProfile(auth.user.id, parsed.data, getClientIp(req));
 
     if (avatarFile && typeof (avatarFile as Blob).arrayBuffer === 'function' && (avatarFile as Blob).size > 0) {
@@ -80,12 +115,33 @@ export async function PATCH(req: Request) {
       }
     }
 
+    if (coverFile && typeof (coverFile as Blob).arrayBuffer === 'function' && (coverFile as Blob).size > 0) {
+      try {
+        const arrayBuffer = await (coverFile as Blob).arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        const declaredMime = (coverFile as File).type || 'application/octet-stream';
+        await uploadOwnCover({
+          userId: auth.user.id,
+          fileBuffer: buffer,
+          declaredMimeType: declaredMime,
+          ipAddress: getClientIp(req),
+        });
+      } catch (err) {
+        if (err instanceof ImageValidationError) {
+          return jsonError(err.code, err.message, 400);
+        }
+        return jsonError('COVER_UPLOAD_FAILED', 'Không thể tải lên hình nền hồ sơ.', 500);
+      }
+    }
+
+    const coverMap = await getUserCoverMap();
     return jsonSuccess({
       user: {
         ...auth.user,
         fullName: latestUser.fullName,
         phone: latestUser.phone,
         avatarUrl: latestUser.avatarUrl,
+        coverUrl: coverMap[String(auth.user.id)] || null,
       },
     });
   }
@@ -119,12 +175,14 @@ export async function PATCH(req: Request) {
   }
 
   const updated = await updateOwnProfile(auth.user.id, parsed.data, getClientIp(req));
+  const coverMap = await getUserCoverMap();
   return jsonSuccess({
     user: {
       ...auth.user,
       fullName: updated.fullName,
       phone: updated.phone,
       avatarUrl: updated.avatarUrl,
+      coverUrl: coverMap[String(auth.user.id)] || null,
     },
   });
 }

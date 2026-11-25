@@ -12,22 +12,63 @@ const chosenDbFile =
       ? devDbFile
       : independentDbFile;
 const defaultDbUrl = chosenDbFile.startsWith('/') ? `file://${chosenDbFile}` : `file:${chosenDbFile}`;
-const targetDbUrl =
-  process.env.DATABASE_URL &&
-  process.env.DATABASE_URL !== 'file:./dev.db' &&
-  process.env.DATABASE_URL !== 'file:./independent_v2.db'
-    ? process.env.DATABASE_URL
-    : defaultDbUrl;
-process.env.DATABASE_URL = targetDbUrl;
-const { PrismaClient } = require('@prisma/client');
 
-const prisma = new PrismaClient({
-  datasources: {
-    db: {
-      url: targetDbUrl,
+function resolveTargetDatabase() {
+  const explicitPostgresUrl =
+    process.env.DATABASE_URL && /^postgres(ql)?:\/\//i.test(process.env.DATABASE_URL)
+      ? process.env.DATABASE_URL
+      : process.env.USE_POSTGRES_TRIAL === '1' && process.env.PG_DATABASE_URL
+        ? process.env.PG_DATABASE_URL
+        : null;
+
+  const targetDbUrl =
+    explicitPostgresUrl ||
+    (process.env.DATABASE_URL &&
+    process.env.DATABASE_URL !== 'file:./dev.db' &&
+    process.env.DATABASE_URL !== 'file:./independent_v2.db'
+      ? process.env.DATABASE_URL
+      : defaultDbUrl);
+
+  return {
+    isPostgres: Boolean(explicitPostgresUrl),
+    explicitPostgresUrl,
+    targetDbUrl,
+  };
+}
+
+let cachedPrisma = null;
+let cachedIsPostgres = false;
+
+function getDefaultPrismaClient() {
+  if (cachedPrisma) return cachedPrisma;
+  const { isPostgres, explicitPostgresUrl, targetDbUrl } = resolveTargetDatabase();
+  cachedIsPostgres = isPostgres;
+  process.env.DATABASE_URL = targetDbUrl;
+
+  if (isPostgres) {
+    process.env.PG_DATABASE_URL = explicitPostgresUrl;
+    const pgClientPath = path.resolve(__dirname, '../generated/postgres-client');
+    const { PrismaClient: PgPrismaClient } = require(pgClientPath);
+    cachedPrisma = new PgPrismaClient({
+      datasources: {
+        db: {
+          url: explicitPostgresUrl,
+        },
+      },
+    });
+    return cachedPrisma;
+  }
+
+  const { PrismaClient } = require('@prisma/client');
+  cachedPrisma = new PrismaClient({
+    datasources: {
+      db: {
+        url: targetDbUrl,
+      },
     },
-  },
-});
+  });
+  return cachedPrisma;
+}
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -89,7 +130,7 @@ const UNAPPROVED_SLA_KEYS = [
   'workingHoursConfig',
 ];
 
-async function syncAuthoritativeProducts(client = prisma) {
+async function syncAuthoritativeProducts(client = getDefaultPrismaClient()) {
   await client.$transaction(async (tx) => {
     const existing = await tx.product.findMany({ orderBy: { id: 'asc' } });
     const byId = new Map(existing.map((r) => [r.id, r]));
@@ -138,17 +179,35 @@ async function syncAuthoritativeProducts(client = prisma) {
       }
     }
   });
+
+  if (cachedIsPostgres || /^postgres(ql)?:\/\//i.test(process.env.DATABASE_URL || '')) {
+    try {
+      await client.$executeRawUnsafe(
+        `SELECT setval(pg_get_serial_sequence('products', 'id'), COALESCE((SELECT MAX(id) FROM products), 1), true)`,
+      );
+    } catch {
+      // Ignore on SQLite clients passed explicitly when env holds a PostgreSQL URL
+    }
+  }
 }
 
 function createSamplePngBuffer() {
-  // Valid 1x1 blue PNG for synthetic attachment/design storage files
+  // Use real showroom photo if available so seeded design versions are real photos, not 1x1 blue pixels
+  const realShowroomPath = path.resolve(
+    __dirname,
+    '../../../apps/web/public/brand/login-hero-led-building.jpg'
+  );
+  if (fs.existsSync(realShowroomPath)) {
+    return fs.readFileSync(realShowroomPath);
+  }
   return Buffer.from(
     '89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c4944415408d7636060f80f00010401005f9527b00000000049454e44ae426082',
     'hex',
   );
 }
 
-async function seedSyntheticModuleData(usersByEmail) {
+async function seedSyntheticModuleData(usersByEmail, client = getDefaultPrismaClient()) {
+  const prisma = client;
   await prisma.$executeRawUnsafe(`
     UPDATE "leads"
     SET "company_name" = REPLACE("company_name", ' (Dữ liệu tổng hợp)', ''),
@@ -159,7 +218,17 @@ async function seedSyntheticModuleData(usersByEmail) {
   if (existingLeadCount > 0) return;
 
   const repoRoot = path.resolve(__dirname, '../../..');
-  const storageRoot = path.resolve(repoRoot, process.env.STORAGE_ROOT || './storage_independent_v2');
+  const rawStorageEnv = (process.env.STORAGE_ROOT || '').trim();
+  const normalizedStorageRoot =
+    !rawStorageEnv ||
+      rawStorageEnv === './storage' ||
+      rawStorageEnv === 'storage' ||
+      rawStorageEnv === '.\\storage'
+      ? './storage_independent_v2'
+      : rawStorageEnv;
+  const storageRoot = path.isAbsolute(normalizedStorageRoot)
+    ? normalizedStorageRoot
+    : path.resolve(repoRoot, normalizedStorageRoot);
   const leadsStorageDir = path.join(storageRoot, 'leads');
   const designStorageDir = path.join(storageRoot, 'design');
   fs.mkdirSync(leadsStorageDir, { recursive: true });
@@ -1008,18 +1077,42 @@ async function seedSyntheticModuleData(usersByEmail) {
   });
 }
 
-async function main() {
+const LEGACY_DEMO_ACCOUNT_EMAILS = [
+  'admin@toantrung.vn',
+  'sales@toantrung.vn',
+  'sales2@toantrung.vn',
+  'marketing@toantrung.vn',
+  'designer@toantrung.vn',
+  'ads@toantrung.vn',
+  'mkt.lead@toantrung.vn',
+  'sales.lead@toantrung.vn',
+  'bod@toantrung.vn',
+];
+
+function resolveSeedMode() {
+  const args = process.argv.slice(2);
+  if (args.includes('--catalog-only')) return 'catalog';
+  if (args.includes('--demo')) return 'demo';
+  const envMode = (process.env.SEED_MODE || '').trim().toLowerCase();
+  if (envMode === 'demo' || envMode === 'catalog') return envMode;
+  if (process.env.NODE_ENV === 'production' || process.env.SKIP_SEED_ACCOUNTS === 'true') {
+    return 'catalog';
+  }
+  return 'catalog';
+}
+
+async function seedCatalogOnly(client = getDefaultPrismaClient()) {
   for (const r of BA_ROLES) {
-    await prisma.role.upsert({
+    await client.role.upsert({
       where: { roleCode: r.roleCode },
       update: { roleName: r.roleName, description: r.description },
       create: r,
     });
   }
 
-  await syncAuthoritativeProducts(prisma);
+  await syncAuthoritativeProducts(client);
 
-  await prisma.systemSetting.deleteMany({
+  await client.systemSetting.deleteMany({
     where: {
       key: { in: UNAPPROVED_SLA_KEYS },
       updatedById: null,
@@ -1043,16 +1136,46 @@ async function main() {
   ];
 
   for (const s of defaultSettings) {
-    await prisma.systemSetting.upsert({
+    await client.systemSetting.upsert({
       where: { key: s.key },
       update: {},
       create: s,
     });
   }
+}
+
+async function main() {
+  const prisma = getDefaultPrismaClient();
+  const seedMode = resolveSeedMode();
+  await seedCatalogOnly(prisma);
+
+  const isProductionEnv = process.env.NODE_ENV === 'production';
+  const allowProdSeedAccounts = process.env.ALLOW_PRODUCTION_SEED_ACCOUNTS === 'true';
+
+  if (seedMode !== 'demo') {
+    console.log(
+      `[db:seed:catalog] Đã nạp 8 vai trò BA, ${BA_PRODUCTS_AUTHORITATIVE.length} sản phẩm chuẩn BA và cấu hình mặc định (KHÔNG tạo tài khoản hay dữ liệu Lead/Thiết kế mẫu).`,
+    );
+    return;
+  }
+
+  if (isProductionEnv && !allowProdSeedAccounts) {
+    throw new Error(
+      'Demo seed (--demo / SEED_MODE=demo) is forbidden in production without ALLOW_PRODUCTION_SEED_ACCOUNTS=true.',
+    );
+  }
 
   const shouldSeedAccounts = process.env.SKIP_SEED_ACCOUNTS !== 'true';
   if (shouldSeedAccounts) {
-    const seedPassword = process.env.SEED_DEV_PASSWORD || 'ToanTrung@2026';
+    const configuredSeedPassword = (process.env.SEED_DEV_PASSWORD || '').trim();
+    if (isProductionEnv && !configuredSeedPassword) {
+      throw new Error(
+        'Production seed requires an explicit SEED_DEV_PASSWORD environment variable (default password is forbidden in production).',
+      );
+    }
+    const seedPassword =
+      configuredSeedPassword ||
+      (isProductionEnv ? crypto.randomBytes(24).toString('base64url') : 'ToanTrung@2026');
     const passwordHash = hashPassword(seedPassword);
 
     const rolesByCode = {};
@@ -1158,16 +1281,7 @@ async function main() {
     for (const acc of devAccounts) {
       const user = await prisma.user.upsert({
         where: { email: acc.email },
-        update: {
-          fullName: acc.fullName,
-          roleId: acc.roleId,
-          department: acc.department,
-          specialtyGroup: acc.specialtyGroup,
-          isReceivingLeads: acc.isReceivingLeads,
-          isOnline: acc.isOnline,
-          passwordHash,
-          isActive: true,
-        },
+        update: {},
         create: {
           ...acc,
           passwordHash,
@@ -1209,7 +1323,7 @@ async function main() {
             category: 'Phòng Marketing & SEO',
             actionLabel: 'Mở Quảng cáo & SEO',
             actionUrl: '/ads',
-            requiredPermission: 'SEO_KEYWORD_MANAGE',
+            requiredPermission: 'AI_MARKETING_SEO',
             isRead: false,
           });
         }
@@ -1222,7 +1336,7 @@ async function main() {
             category: 'Bộ phận Quảng cáo Ads',
             actionLabel: 'Xem Chiến dịch Ads',
             actionUrl: '/ads',
-            requiredPermission: 'ADS_CAMPAIGN_VIEW',
+            requiredPermission: 'TRACKING_ADS_OPTIMIZE',
             isRead: false,
           });
         }
@@ -1235,7 +1349,7 @@ async function main() {
             category: 'Bộ phận Thiết kế',
             actionLabel: 'Mở Thiết kế AI',
             actionUrl: '/design',
-            requiredPermission: 'DESIGN_REQUEST_CREATE_VIEW',
+            requiredPermission: 'AI_DESIGN',
             isRead: false,
           });
         }
@@ -1246,7 +1360,7 @@ async function main() {
       }
     }
 
-    await seedSyntheticModuleData(usersByEmail);
+    await seedSyntheticModuleData(usersByEmail, prisma);
 
     console.log(
       `Đã khởi tạo 8 vai trò BA, ${BA_PRODUCTS_AUTHORITATIVE.length} sản phẩm chuẩn BA, ${devAccounts.length} tài khoản và dữ liệu tổng hợp cho cả 5 phân hệ.`,
@@ -1258,7 +1372,10 @@ module.exports = {
   BA_ROLES,
   BA_PRODUCTS_AUTHORITATIVE,
   UNAPPROVED_SLA_KEYS,
+  LEGACY_DEMO_ACCOUNT_EMAILS,
   syncAuthoritativeProducts,
+  seedCatalogOnly,
+  resolveSeedMode,
   main,
 };
 
@@ -1268,5 +1385,5 @@ if (require.main === module) {
       console.error(err);
       process.exitCode = 1;
     })
-    .finally(() => prisma.$disconnect());
+    .finally(() => (cachedPrisma ? cachedPrisma.$disconnect() : Promise.resolve()));
 }

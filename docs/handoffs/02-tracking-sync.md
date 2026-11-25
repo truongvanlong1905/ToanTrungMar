@@ -10,7 +10,7 @@ Kho mã nguồn GitHub: `https://github.com/truongvanlong1905/ToanTrungMar` (nh�
 ## 1. Hiện trạng & Nguồn nghiệp vụ chuẩn
 - Đã tiếp nhận và phân tích toàn diện **Tài liệu đặc tả BA: UC03 (Tracking nguồn và đồng bộ dữ liệu đa kênh)**.
 - Chi tiết đặc tả nghiệp vụ đầy đủ đã được ghi nhận tại [docs/modules/02-tracking-sync.md](../modules/02-tracking-sync.md).
-- Khung thư mục mã nguồn đã sẵn sàng: `apps/web/src/modules/02-tracking-sync/`, `apps/api/src/modules/02-tracking-sync/`, `packages/contracts/src/02-tracking-sync/`.
+- Mã nguồn hiện tại: Đã triển khai hoàn chỉnh (`apps/web/src/modules/02-tracking-sync/TrackingWorkspace.tsx`, `apps/api/src/modules/02-tracking-sync/service.ts`, `packages/contracts/src/02-tracking-sync/index.ts`), bao gồm bóc tách tín hiệu `gclid > UTM > Referrer`, chờ tra lại `gclid` (A2), đồng bộ kho D3, phễu L1/L2/L3, đối soát Google Lead Form (Luồng D) và trình mô phỏng kịch bản Webhook.
 
 ---
 
@@ -33,3 +33,11 @@ Kho mã nguồn GitHub: `https://github.com/truongvanlong1905/ToanTrungMar` (nh�
 6. **Database Model (Đã hoàn thiện tại `packages/database/prisma/models/02-tracking-sync.prisma`)**:
    - Gồm 6 bảng: `campaigns` (khóa duy nhất theo `platform + account_external_id + campaign_code`), `marketing_tracking` (khóa chống trùng webhook theo `intake_source_provider + intake_source_account_key + external_submission_id`), `platform_daily_metrics` (chi phí/ngân sách/CPC lưu bằng `BigInt` micros kèm `currency_code`, khóa duy nhất đủ 8 chiều chuẩn hóa), `platform_sync_logs`, `lead_reconciliations`, `webhook_intake_error_logs`.
    - Đã có hàm giao dịch nguyên tử `ingestLeadWithTrackingIdempotent` và `upsertPlatformMetricIdempotent` tại `packages/database/src/operations.ts`. Quyền sửa tay Nguồn/Chiến dịch chờ BA chốt giữa `UC03-4` và `UC03 BR5` tại [Q02](../decisions/OPEN_QUESTIONS.md#q02).
+
+
+---
+
+## 3. Nâng cấp Chuẩn Doanh Nghiệp Local — Enterprise Edition (24/11/2026)
+- **Truy vết ngược số liệu KPI (Click-to-Audit Lineage)**: Bổ sung `KpiAuditLineageDrawer.tsx` + `/api/v1/reports/audit-lineage?mode=lineage` ngay trên `TrackingWorkspace.tsx` để bấm vào thẻ phễu L1/L2/L3 mở danh sách hồ sơ đối chứng gốc (tự động ẩn danh PII đối với `MKT_STAFF`/`ADS` theo UC01).
+- **Cảnh báo sớm đứt gãy phễu thu thập (Funnel & Tracking Anomaly Guard)**: `FunnelAnomalyGuardStrip` (`/api/v1/reports/audit-lineage?mode=anomalies`) tự động phát hiện website có chi phí/truy cập nhưng 0 form > 24h, chiến dịch tỷ lệ Spam > 35%, và lỗi webhook chưa xử lý.
+- **Webhook Sandbox 1-Click & Audit Trail (`Đợt 4`)**: Bổ sung trình giả lập thực chiến `toantrung.com.vn`, `bangled.vn` và kịch bản trùng SĐT ngay tại `/settings?tab=governance` (`/api/v1/admin/governance`), chạy trực tiếp qua `ingestLeadWithTrackingIdempotent` và đẩy thông báo SSE tức thì.

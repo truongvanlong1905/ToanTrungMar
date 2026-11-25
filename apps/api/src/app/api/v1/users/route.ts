@@ -1,15 +1,24 @@
 import { CreateUserSchema, DeleteUserSchema, UpdateUserSchema } from '@toantrung/contracts';
 import { getClientIp, jsonError, jsonSuccess } from '../../../../core/http';
-import { requireAdminSession } from '../../../../core/permissions';
+import { requireAdminSession, requireAuthenticatedSession } from '../../../../core/permissions';
 import {
   AuthServiceError,
   createAdminUser,
   deleteAdminUser,
   listAdminUsers,
+  listTeamDirectoryMembers,
   updateAdminUser,
 } from '../../../../core/auth/service';
 
 export async function GET(req: Request) {
+  const url = new URL(req.url);
+  if (url.searchParams.get('scope') === 'directory') {
+    const auth = await requireAuthenticatedSession(req, { requireCsrf: false });
+    if (!auth.ok) return auth.response;
+    const members = await listTeamDirectoryMembers();
+    return jsonSuccess({ members });
+  }
+
   const auth = await requireAdminSession(req, { requireCsrf: false });
   if (!auth.ok) return auth.response;
 

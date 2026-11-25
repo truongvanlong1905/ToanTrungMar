@@ -7,13 +7,14 @@ on:
     branches: [main, develop]
 
 jobs:
-  verify-core-and-governance:
-    name: Governance, Typecheck & Core Security Tests
+  verify-core-and-build:
+    name: Governance, Typecheck, Full Core Suite & Linux Build
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: "file:./independent_v2.db"
       SESSION_SECRET: "ci-ephemeral-session-secret-minimum-32-chars-2026"
       STORAGE_ROOT: "./storage"
+      SEED_MODE: "demo"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,31 +36,83 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate Prisma Client, Push & Seed local test schema
+      - name: Generate Prisma Client (Linux/Debian), Push & Seed Demo Fixture DB
         run: |
           npm run db:generate
           npm run db:push
-          npm run db:seed
+          npm run db:seed:demo
           cp packages/database/prisma/independent_v2.db packages/database/prisma/dev.db
 
-      - name: Run Core security & RBAC unit tests
+      - name: Run FULL Core Security, Regression & Integrity Test Suite (preserving exit codes)
+        shell: bash
         run: |
-          for test_file in \
-            apps/api/src/core/__tests__/core-security.test.js \
-            apps/api/src/core/__tests__/database-shared-schema.test.js; do
+          set -euo pipefail
+          for test_file in apps/api/src/core/__tests__/*.test.js; do
             echo "::group::Running $test_file"
-            if ! node --test --test-reporter spec "$test_file" 2>&1 | tee test_out.log; then
-              echo "::endgroup::"
-              echo "### ❌ Test Failed: \`$test_file\`" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              cat test_out.log >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              exit 1
-            fi
+            node --test --test-reporter spec "$test_file" 2>&1 | tee test_out.log
             echo "::endgroup::"
             echo "✅ $test_file passed"
           done
 
-      - name: Run TypeScript typecheck across workspaces
+      - name: Run TypeScript typecheck across all 4 workspaces
         run: npm run typecheck
 
+      - name: Verify Next.js Linux Production Build (without running db:seed)
+        run: NODE_ENV=production npm run build
+
+  postgres-staging-smoke:
+    name: PostgreSQL Schema Migration & Catalog Seed Smoke Check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_staging_password_2026
+          POSTGRES_DB: toantrung_v2_staging
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: "postgresql://postgres:ci_staging_password_2026@127.0.0.1:5432/toantrung_v2_staging?schema=public"
+      PG_DATABASE_URL: "postgresql://postgres:ci_staging_password_2026@127.0.0.1:5432/toantrung_v2_staging?schema=public"
+      SESSION_SECRET: "ci-ephemeral-session-secret-minimum-32-chars-2026"
+      ADMIN_BOOTSTRAP_EMAIL: "staging.admin@toantrung.vn"
+      ADMIN_BOOTSTRAP_PASSWORD: "CiStagingAdmin#2026Strong!"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies & generate Linux PostgreSQL Prisma Client
+        run: |
+          npm ci --include=dev
+          npm run db:generate
+
+      - name: Apply PostgreSQL migrations (clean DB + idempotent re-run)
+        env:
+          NODE_ENV: "production"
+        run: |
+          npm run db:migrate:deploy
+          npm run db:migrate:deploy
+
+      - name: Run catalog-only seed (must NOT create demo accounts or sample leads)
+        env:
+          NODE_ENV: "production"
+        run: |
+          npm run db:seed:catalog
+          npm run db:provision:admin
+
+      - name: Build production web app on Linux
+        env:
+          NODE_ENV: "production"
+        run: npm run build

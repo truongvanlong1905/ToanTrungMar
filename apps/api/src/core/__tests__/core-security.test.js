@@ -28,7 +28,10 @@ test('scrypt password hashing verifies valid password and rejects tampered or wr
   assert.equal(verifyPassword('ToanTrung@2026', 'invalid$hash'), false);
 });
 
-// Test 2: 8 BA Roles and 12 Permission Matrix invariants
+// Test 2: 8 BA Roles and 12 Permission Matrix invariants (verified directly against packages/contracts/src/common/index.ts)
+const fs = require('node:fs');
+const path = require('node:path');
+
 const ROLE_MATRIX = {
   SALES: ['LEAD_CREATE', 'LEAD_VIEW_OWN', 'LEAD_UPDATE_PIPELINE', 'LEAD_REASSIGN', 'ATTACHMENT_UPLOAD_VIEW', 'DASHBOARD_VIEW', 'EXPORT_DATA'],
   MKT_STAFF: ['LEAD_VIEW_OWN', 'LEAD_VIEW_ALL', 'AI_MARKETING_SEO', 'TRACKING_ADS_OPTIMIZE', 'DASHBOARD_VIEW', 'EXPORT_DATA'],
@@ -36,11 +39,17 @@ const ROLE_MATRIX = {
   ADS: ['LEAD_VIEW_OWN', 'LEAD_VIEW_ALL', 'AI_MARKETING_SEO', 'TRACKING_ADS_OPTIMIZE', 'DASHBOARD_VIEW', 'EXPORT_DATA'],
   MKT_LEAD: ['LEAD_VIEW_OWN', 'LEAD_VIEW_ALL', 'AI_MARKETING_SEO', 'TRACKING_ADS_OPTIMIZE', 'DASHBOARD_VIEW', 'EXPORT_DATA'],
   SALES_LEAD: ['LEAD_CREATE', 'LEAD_VIEW_OWN', 'LEAD_VIEW_ALL', 'LEAD_UPDATE_PIPELINE', 'LEAD_REASSIGN', 'ATTACHMENT_UPLOAD_VIEW', 'DASHBOARD_VIEW', 'EXPORT_DATA'],
-  BOD: ['LEAD_CREATE', 'LEAD_VIEW_OWN', 'LEAD_VIEW_ALL', 'LEAD_UPDATE_PIPELINE', 'LEAD_REASSIGN', 'ATTACHMENT_UPLOAD_VIEW', 'TRACKING_ADS_OPTIMIZE', 'DASHBOARD_VIEW', 'EXPORT_DATA'],
+  BOD: ['LEAD_CREATE', 'LEAD_VIEW_OWN', 'LEAD_VIEW_ALL', 'LEAD_UPDATE_PIPELINE', 'LEAD_REASSIGN', 'ATTACHMENT_UPLOAD_VIEW', 'DASHBOARD_VIEW', 'EXPORT_DATA'],
   ADMIN: ['LEAD_CREATE', 'LEAD_VIEW_OWN', 'LEAD_VIEW_ALL', 'LEAD_UPDATE_PIPELINE', 'LEAD_REASSIGN', 'ATTACHMENT_UPLOAD_VIEW', 'AI_DESIGN', 'AI_MARKETING_SEO', 'TRACKING_ADS_OPTIMIZE', 'DASHBOARD_VIEW', 'EXPORT_DATA', 'SYSTEM_USER_ADMIN'],
 };
 
-test('BA permission matrix preserves all 8 roles, restricts SYSTEM_USER_ADMIN to ADMIN, and restricts AI_DESIGN to DESIGNER and ADMIN', () => {
+test('BA permission matrix preserves all 8 roles, restricts SYSTEM_USER_ADMIN to ADMIN, restricts AI_DESIGN to DESIGNER and ADMIN, and excludes TRACKING_ADS_OPTIMIZE from BOD', () => {
+  const contractsPath = path.resolve(__dirname, '../../../../../packages/contracts/src/common/index.ts');
+  const contractsSource = fs.readFileSync(contractsPath, 'utf8');
+  const bodMatch = contractsSource.match(/BOD:\s*\[([\s\S]*?)\]/);
+  assert.ok(bodMatch, 'ROLE_PERMISSION_MATRIX.BOD must exist in contracts');
+  assert.equal(bodMatch[1].includes('TRACKING_ADS_OPTIMIZE'), false, 'BOD must NOT have TRACKING_ADS_OPTIMIZE per docs/PERMISSIONS.md');
+
   const roles = Object.keys(ROLE_MATRIX);
   assert.equal(roles.length, 8);
 

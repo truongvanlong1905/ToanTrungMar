@@ -10,7 +10,7 @@ Kho mã nguồn GitHub: `https://github.com/truongvanlong1905/ToanTrungMar` (nh�
 ## 1. Hiện trạng & Nguồn nghiệp vụ chuẩn
 - Đã tiếp nhận và phân tích toàn diện **Tài liệu đặc tả BA (UC01, UC02, Sơ đồ tuần tự, Sơ đồ hoạt động, Sơ đồ BPMN As-is/To-be)**.
 - Chi tiết đặc tả nghiệp vụ đầy đủ đã được ghi nhận tại [docs/modules/01-leads.md](../modules/01-leads.md).
-- Mã nguồn hiện tại: Khung workspace đã sẵn sàng (`apps/web/src/modules/01-leads/`, `apps/api/src/modules/01-leads/`, `packages/contracts/src/01-leads/`), hiển thị trạng thái phát triển ban đầu.
+- Mã nguồn hiện tại: Đã triển khai hoàn chỉnh cả 4 lớp (`packages/database/prisma/models/01-leads.prisma`, `packages/contracts/src/01-leads/index.ts`, `apps/api/src/modules/01-leads/service.ts`, `apps/web/src/modules/01-leads/LeadsWorkspace.tsx`), bao gồm chế độ xem Bảng CRM & Kanban 5 bước, bộ lọc quá hạn >7 ngày, kiểm soát phạm vi sở hữu Lead, liên kết tạo Phối cảnh 3D AI và xuất Excel `.xlsx`.
 
 ---
 
@@ -44,3 +44,21 @@ Kho mã nguồn GitHub: `https://github.com/truongvanlong1905/ToanTrungMar` (nh�
    - Triển khai `apps/api/src/modules/01-leads/` sử dụng `transitionLeadWithVersion` và các route handler tương ứng.
 4. **Giao diện người dùng (Frontend)**:
    - Xây dựng bảng Kanban Pipeline và danh sách Lead trực quan tại `apps/web/src/modules/01-leads/`.
+
+---
+
+## 4. Bản vá QA ngày 21/11/2026
+1. **Sửa lỗi chọn nhiều sản phẩm quan tâm**: Chuyển xử lý toggle checkbox từ `<label onClick>` sang `<input onChange>` ở `ManualLeadModal.tsx` và `LeadsWorkspace.tsx` để chọn được nhiều sản phẩm cùng nhóm và khác nhóm.
+2. **Danh mục sản phẩm & nhóm sản phẩm động (Admin)**: Bổ sung endpoint `/api/v1/leads/products` và `ProductCatalogModal.tsx` (guard quyền `SYSTEM_USER_ADMIN`) giúp Admin thêm chi tiết dòng LED (`P2`, `P2.5`, `P3`...) hoặc tạo nhóm sản phẩm mới qua `products` + `SystemSetting` (`lead_product_group_labels_v1`) mà vẫn giữ nguyên 25 bản ghi seed gốc.
+3. **Làm rõ tên công trình & thông báo chuyển Lead**: Làm rõ nhãn/placeholder *Tên công trình / Dự án cụ thể* để tránh trùng với *Sản phẩm quan tâm*, gửi thông báo chuông CRM kèm deep-link `/leads?leadId=...` cả khi chuyển kinh doanh lúc tạo mới, đồng thời bổ sung thông báo nổi toàn CRM + tiếng chuông nhẹ + thông báo góc màn hình Windows/Chrome khi mở tab khác (`SessionContext`, `WorkspaceShell`), thanh ghim Lead vừa bàn giao chờ tiếp nhận và nút **Copy tin nhắn & link gửi Zalo** trên `LeadsWorkspace`.
+4. **Nút tắt Quản lý danh mục SP**: Bổ sung thêm nút `+ Quản lý danh mục` cho Admin ngay trong khối `Sản phẩm quan tâm` của form chi tiết Lead.
+
+
+---
+
+## 5. Nâng cấp Chuẩn Doanh Nghiệp Local — Enterprise Edition (24/11/2026)
+- **Tách mô-đun lazy-load (`next/dynamic`)**: Tách `LeadExcelImportModal.tsx` và `LeadRiskAndFraudModals.tsx` khỏi `LeadsWorkspace.tsx`; bọc `SectionErrorBoundary` tại `WorkspaceShell.tsx`.
+- **Realtime SSE nội bộ (`<50ms`) & Thanh lệnh `Ctrl + K`**: Đẩy sự kiện tức thì qua `/api/v1/system/stream` (không cần Redis, tự fallback polling khi mất kết nối) và tìm kiếm nhanh qua `/api/v1/system/command-search` (che SĐT/PII đối với `MKT_STAFF`/`ADS` theo UC01).
+- **Split-View Triage 2 cột + Saved Smart Views + Customer 360°**: `LeadSplitTriageView.tsx` (duyệt nhanh phím `↑`/`↓` + gom lịch sử đa dự án cùng khách hàng), `LeadSavedSmartViewsBar.tsx` (`/api/v1/system/saved-views` lưu theo từng user vào `SystemSetting`).
+- **Phiếu Đề xuất Cấu hình Kỹ thuật LED & Smart Handover Brief Zero-PII**: `LedTechnicalSpecSheetModal.tsx` + `/api/v1/leads/led-spec-sheet` (tính Pixel Pitch, ghép Cabinet, tỷ lệ FHD/4K, nguồn điện kW, xuất Word `.doc` / in A4 PDF, đẩy thông số sang M05 — tuyệt đối 0 đơn giá/doanh thu khi Q08 mở) và `SmartHandoverBriefCard.tsx` (`/api/v1/ai/copilot` lọc sạch SĐT/Email trước khi tóm tắt bàn giao).
+- **Trạng thái Git**: Chạy ổn định trên Local (`localhost:3000`), giữ local chờ duyệt trước khi commit/push.

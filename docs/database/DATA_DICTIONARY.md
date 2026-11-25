@@ -1,6 +1,6 @@
 # Từ điển dữ liệu ERD BA hiện tại
 
-Chép tên trường/kiểu từ [ERD PDF](../sources/assets/ba-erd.pdf), không phải schema đã triển khai. Chỉ ghi một số khóa/NN nhìn thấy rõ; bảng này không thay DBML để sinh DDL, không tự bổ sung default/unique/FK/cascade. Kiểu int unsigned/tinyint/datetime được giữ nguyên để tránh âm thầm chuyển provider. Nhận xét là đối chiếu use case, không phải thay đổi ERD.
+Chép tên trường/kiểu từ tài liệu ERD PDF gốc (lưu cục bộ ngoài Git), không phải schema đã triển khai. Chỉ ghi một số khóa/NN nhìn thấy rõ; bảng này không thay DBML để sinh DDL, không tự bổ sung default/unique/FK/cascade. Kiểu int unsigned/tinyint/datetime được giữ nguyên để tránh âm thầm chuyển provider. Nhận xét là đối chiếu use case, không phải thay đổi ERD.
 
 ## roles
 

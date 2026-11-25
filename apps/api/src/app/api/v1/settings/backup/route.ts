@@ -2,9 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { prisma } from '@toantrung/database';
+import { APP_CONFIG } from '../../../../../core/config';
 import { getClientIp, jsonError, jsonSuccess } from '../../../../../core/http';
+import { logServerEvent, summarizeError } from '../../../../../core/logging/logger';
 import { requireAdminSession } from '../../../../../core/permissions';
 import { updateBrandingMetadata } from '../../../../../core/storage/branding.service';
+import {
+  copyAndHashBusinessFilesForBackup,
+  type BackupBusinessFileEntry,
+} from '../../../../../core/storage/private-files.service';
 
 const COMPANY_PROFILE_SETTING_KEY = 'company.profile.v1';
 
@@ -19,15 +25,22 @@ export interface CompanyProfileData {
 
 export interface BackupManifest {
   backupId: string;
+  databaseProvider: 'postgresql' | 'sqlite';
   fileName: string;
   fileSizeBytes: number;
   sha256: string;
   restoreVerified: boolean;
   restoreVerificationMethod: string;
+  backupDurationMs?: number;
+  businessFilesCount?: number;
+  businessFilesBytes?: number;
+  businessFilesManifest?: BackupBusinessFileEntry[];
+  rpoSummary?: string;
   recordCounts: {
     leads: number;
     designRequests: number;
     trackingEvents: number;
+    trackingTouchpoints?: number;
     seoArticles: number;
     users: number;
     auditLogs: number;
@@ -47,11 +60,17 @@ const DEFAULT_COMPANY_PROFILE: CompanyProfileData = {
 
 function resolveWorkspaceRoot(): string {
   const cwd = process.cwd();
-  if (fs.existsSync(path.join(cwd, 'packages', 'database', 'prisma', 'independent_v2.db'))) {
+  if (
+    fs.existsSync(path.join(cwd, 'packages', 'database', 'prisma', 'independent_v2.db')) ||
+    fs.existsSync(path.join(cwd, 'packages', 'database', 'package.json'))
+  ) {
     return cwd;
   }
   const twoUp = path.resolve(cwd, '..', '..');
-  if (fs.existsSync(path.join(twoUp, 'packages', 'database', 'prisma', 'independent_v2.db'))) {
+  if (
+    fs.existsSync(path.join(twoUp, 'packages', 'database', 'prisma', 'independent_v2.db')) ||
+    fs.existsSync(path.join(twoUp, 'packages', 'database', 'package.json'))
+  ) {
     return twoUp;
   }
   return cwd;
@@ -59,12 +78,31 @@ function resolveWorkspaceRoot(): string {
 
 function resolveSqliteDbPath(): string {
   const root = resolveWorkspaceRoot();
+  const rawDbUrl = (process.env.DATABASE_URL || '').trim();
+  if (
+    rawDbUrl.startsWith('file:') &&
+    rawDbUrl !== 'file:./dev.db' &&
+    rawDbUrl !== 'file:./independent_v2.db'
+  ) {
+    let candidatePath = rawDbUrl.startsWith('file://')
+      ? rawDbUrl.slice('file://'.length)
+      : rawDbUrl.slice('file:'.length);
+    if (/^\/[a-zA-Z]:/.test(candidatePath)) {
+      candidatePath = candidatePath.slice(1);
+    }
+    candidatePath = decodeURIComponent(candidatePath.split('?')[0] || '');
+    const resolvedFromEnv = path.isAbsolute(candidatePath)
+      ? path.resolve(candidatePath)
+      : path.resolve(root, candidatePath);
+    if (fs.existsSync(resolvedFromEnv)) {
+      return resolvedFromEnv;
+    }
+  }
   return path.join(root, 'packages', 'database', 'prisma', 'independent_v2.db');
 }
 
 function resolveStorageDir(): string {
-  const root = resolveWorkspaceRoot();
-  const dir = path.join(root, 'storage_independent_v2');
+  const dir = path.resolve(APP_CONFIG.getStorageRoot());
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -94,8 +132,27 @@ function computeDirectoryStats(dirPath: string): { totalBytes: number; fileCount
   return { totalBytes, fileCount };
 }
 
+function detectActiveDatabaseProvider(): 'postgresql' | 'sqlite' {
+  const providerEnv = (process.env.DATABASE_PROVIDER || '').trim().toLowerCase();
+  const dbUrl = (process.env.DATABASE_URL || '').trim().toLowerCase();
+  if (
+    providerEnv === 'postgresql' ||
+    /^postgres(ql)?:\/\//.test(dbUrl) ||
+    (process.env.USE_POSTGRES_TRIAL === '1' && Boolean(process.env.PG_DATABASE_URL))
+  ) {
+    return 'postgresql';
+  }
+  return 'sqlite';
+}
+
+function resolveBackupsRootDir(): string {
+  const dir = path.resolve(APP_CONFIG.getBackupRoot());
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function listBackups(): BackupManifest[] {
-  const backupsRoot = path.join(resolveStorageDir(), 'backups');
+  const backupsRoot = resolveBackupsRootDir();
   if (!fs.existsSync(backupsRoot)) return [];
 
   const entries = fs.readdirSync(backupsRoot, { withFileTypes: true });
@@ -107,8 +164,11 @@ function listBackups(): BackupManifest[] {
     try {
       const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as BackupManifest;
       manifests.push(parsed);
-    } catch {
-      // ignore malformed manifest
+    } catch (err) {
+      logServerEvent('warn', 'backup', 'Ignored malformed backup manifest.json', {
+        dir: entry.name,
+        ...summarizeError(err),
+      });
     }
   }
   return manifests.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -139,15 +199,20 @@ export async function GET(req: Request) {
   if (!auth.ok) return auth.response;
 
   try {
+    const databaseProvider = detectActiveDatabaseProvider();
     const dbPath = resolveSqliteDbPath();
-    const dbSizeBytes = fs.existsSync(dbPath) ? fs.statSync(dbPath).size : 0;
+    const dbSizeBytes =
+      databaseProvider === 'sqlite' && fs.existsSync(dbPath) ? fs.statSync(dbPath).size : 0;
     const storageStats = computeDirectoryStats(resolveStorageDir());
     const companyProfile = await getCompanyProfile();
     const backups = listBackups();
 
     return jsonSuccess({
       companyProfile,
+      databaseProvider,
       storage: {
+        databaseProvider,
+        backupRoot: resolveBackupsRootDir(),
         dbSizeBytes,
         storageFilesBytes: storageStats.totalBytes,
         totalUsedBytes: dbSizeBytes + storageStats.totalBytes,
@@ -234,66 +299,197 @@ export async function POST(req: Request) {
       return jsonSuccess({ companyProfile: profile });
     }
 
-    // Action: create_backup + non-destructive restore verification
-    const dbPath = resolveSqliteDbPath();
-    if (!fs.existsSync(dbPath)) {
-      return jsonError('DB_FILE_NOT_FOUND', 'Không tìm thấy tệp cơ sở dữ liệu SQLite để sao lưu.', 404);
-    }
-
+    // Action: create_backup + business files snapshot + non-destructive restore verification
+    const startedMs = Date.now();
+    const databaseProvider = detectActiveDatabaseProvider();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupId = `backup-${timestamp}`;
-    const backupDir = path.join(resolveStorageDir(), 'backups', backupId);
+    const backupDir = path.join(resolveBackupsRootDir(), backupId);
     fs.mkdirSync(backupDir, { recursive: true });
 
-    const backupDbFileName = `independent_v2_${timestamp}.db`;
-    const backupDbPath = path.join(backupDir, backupDbFileName);
+    let backupDbFileName = '';
+    let backupDbPath = '';
+    let restoreVerified = false;
+    let restoreVerificationMethod = '';
+    let sha256 = '';
+    let backupSizeBytes = 0;
 
-    // 1. Copy SQLite DB file to backup folder
-    fs.copyFileSync(dbPath, backupDbPath);
-    const backupBuffer = fs.readFileSync(backupDbPath);
-    const sha256 = crypto.createHash('sha256').update(backupBuffer).digest('hex');
+    if (databaseProvider === 'postgresql') {
+      backupDbFileName = `postgresql_snapshot_${timestamp}.json`;
+      backupDbPath = path.join(backupDir, backupDbFileName);
+      const [
+        usersRows,
+        rolesRows,
+        productsRows,
+        leadsRows,
+        leadProductsRows,
+        attachmentsRows,
+        trackingRows,
+        touchpointsRows,
+        campaignsRows,
+        seoArticlesRows,
+        designRequestsRows,
+        designVersionsRows,
+        systemSettingsRows,
+      ] = await Promise.all([
+        prisma.user.findMany({ orderBy: { id: 'asc' } }),
+        prisma.role.findMany({ orderBy: { id: 'asc' } }),
+        prisma.product.findMany({ orderBy: { id: 'asc' } }),
+        prisma.lead.findMany({ orderBy: { id: 'asc' } }),
+        prisma.leadProduct.findMany({ orderBy: { id: 'asc' } }),
+        prisma.leadAttachment.findMany({ orderBy: { id: 'asc' } }),
+        prisma.marketingTracking.findMany({ orderBy: { id: 'asc' } }),
+        prisma.trackingTouchpoint.findMany({ orderBy: { id: 'asc' } }),
+        prisma.campaign.findMany({ orderBy: { id: 'asc' } }),
+        prisma.seoArticle.findMany({ orderBy: { id: 'asc' } }),
+        prisma.designRequest.findMany({ orderBy: { id: 'asc' } }),
+        prisma.designAssetVersion.findMany({ orderBy: { id: 'asc' } }),
+        prisma.systemSetting.findMany({ orderBy: { key: 'asc' } }),
+      ]);
 
-    // 2. Non-destructive Restore Verification on a separate test copy
-    const restoreTestPath = path.join(backupDir, 'restore-verify-test.db');
-    fs.copyFileSync(backupDbPath, restoreTestPath);
-    const restoredBuffer = fs.readFileSync(restoreTestPath);
-    const restoredSha256 = crypto.createHash('sha256').update(restoredBuffer).digest('hex');
-    const sqliteMagic = restoredBuffer.subarray(0, 15).toString('ascii');
-    fs.unlinkSync(restoreTestPath);
+      const snapshotPayload = JSON.stringify(
+        {
+          format: 'toantrung-pg-logical-snapshot-v1',
+          exportedAt: new Date().toISOString(),
+          tables: {
+            users: usersRows,
+            roles: rolesRows,
+            products: productsRows,
+            leads: leadsRows,
+            leadProducts: leadProductsRows,
+            leadAttachments: attachmentsRows,
+            marketingTracking: trackingRows,
+            trackingTouchpoints: touchpointsRows,
+            campaigns: campaignsRows,
+            seoArticles: seoArticlesRows,
+            designRequests: designRequestsRows,
+            designAssetVersions: designVersionsRows,
+            systemSettings: systemSettingsRows,
+          },
+        },
+        (_k, v) => (typeof v === 'bigint' ? v.toString() : v),
+        2,
+      );
+      fs.writeFileSync(backupDbPath, snapshotPayload, 'utf8');
+      const pgBuf = fs.readFileSync(backupDbPath);
+      sha256 = crypto.createHash('sha256').update(pgBuf).digest('hex');
+      backupSizeBytes = pgBuf.length;
+      const parsedVerify = JSON.parse(fs.readFileSync(backupDbPath, 'utf8')) as {
+        format?: string;
+        tables?: Record<string, unknown[]>;
+      };
+      restoreVerified =
+        parsedVerify.format === 'toantrung-pg-logical-snapshot-v1' &&
+        Boolean(parsedVerify.tables && Array.isArray(parsedVerify.tables.leads));
+      restoreVerificationMethod = 'PostgreSQL-Logical-Snapshot-JSON-Parse-And-SHA256';
+    } else {
+      const dbPath = resolveSqliteDbPath();
+      if (!fs.existsSync(dbPath)) {
+        return jsonError('DB_FILE_NOT_FOUND', 'Không tìm thấy tệp cơ sở dữ liệu SQLite để sao lưu.', 404);
+      }
 
-    const restoreVerified =
-      restoredBuffer.length > 0 &&
-      restoredSha256 === sha256 &&
-      sqliteMagic === 'SQLite format 3';
+      backupDbFileName = `independent_v2_${timestamp}.db`;
+      backupDbPath = path.join(backupDir, backupDbFileName);
+
+      const escapedVacuumTarget = backupDbPath.replace(/\\/g, '/').replace(/'/g, "''");
+      try {
+        if (fs.existsSync(backupDbPath)) {
+          fs.unlinkSync(backupDbPath);
+        }
+        await prisma.$executeRawUnsafe(`VACUUM INTO '${escapedVacuumTarget}'`);
+      } catch (err) {
+        logServerEvent('warn', 'backup', 'VACUUM INTO failed; falling back to copyFileSync', summarizeError(err));
+        fs.copyFileSync(dbPath, backupDbPath);
+      }
+
+      const backupBuffer = fs.readFileSync(backupDbPath);
+      sha256 = crypto.createHash('sha256').update(backupBuffer).digest('hex');
+      backupSizeBytes = backupBuffer.length;
+
+      const restoreTestPath = path.join(backupDir, 'restore-verify-test.db');
+      fs.copyFileSync(backupDbPath, restoreTestPath);
+      const restoredBuffer = fs.readFileSync(restoreTestPath);
+      const restoredSha256 = crypto.createHash('sha256').update(restoredBuffer).digest('hex');
+      const sqliteMagic = restoredBuffer.subarray(0, 15).toString('ascii');
+
+      let pragmaIntegrityOk = true;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const nodeSqlite = require('node:sqlite') as {
+          DatabaseSync?: new (p: string, opts?: { readOnly?: boolean }) => {
+            prepare: (sql: string) => { get: () => Record<string, unknown> | undefined };
+            close: () => void;
+          };
+        };
+        if (nodeSqlite?.DatabaseSync) {
+          const testDb = new nodeSqlite.DatabaseSync(restoreTestPath, { readOnly: true });
+          try {
+            const row = testDb.prepare('PRAGMA integrity_check').get();
+            const checkVal = String(row?.integrity_check || '').toLowerCase();
+            pragmaIntegrityOk = checkVal === 'ok';
+          } finally {
+            testDb.close();
+          }
+        }
+      } catch {
+        // Fallback to header + checksum verification if node:sqlite is unavailable
+      } finally {
+        try {
+          if (fs.existsSync(restoreTestPath)) fs.unlinkSync(restoreTestPath);
+        } catch {
+          // ignore cleanup error
+        }
+      }
+
+      restoreVerified =
+        restoredBuffer.length > 0 &&
+        restoredSha256 === sha256 &&
+        sqliteMagic === 'SQLite format 3' &&
+        pragmaIntegrityOk;
+      restoreVerificationMethod = 'SQLite-VACUUM-INTO-IntegrityCheck-And-SHA256';
+    }
 
     if (!restoreVerified) {
       return jsonError(
         'BACKUP_VERIFICATION_FAILED',
-        'Kiểm tra khôi phục (Restore Verification) thất bại: Checksum hoặc SQLite header không khớp.',
+        'Kiểm tra khôi phục (Restore Verification) thất bại: Checksum hoặc tính toàn vẹn bản sao lưu không hợp lệ.',
         500,
       );
     }
 
-    const [leads, designRequests, trackingEvents, seoArticles, users, auditLogs] = await Promise.all([
-      prisma.lead.count(),
-      prisma.designRequest.count(),
-      prisma.platformSyncLog.count(),
-      prisma.seoArticle.count(),
-      prisma.user.count(),
-      prisma.auditLog.count(),
-    ]);
+    const businessFilesDir = path.join(backupDir, 'files');
+    const businessFilesManifest = copyAndHashBusinessFilesForBackup(businessFilesDir);
+    const businessFilesBytes = businessFilesManifest.reduce((sum, f) => sum + f.sizeBytes, 0);
+
+    const [leads, designRequests, trackingEvents, trackingTouchpoints, seoArticles, users, auditLogs] =
+      await Promise.all([
+        prisma.lead.count(),
+        prisma.designRequest.count(),
+        prisma.platformSyncLog.count(),
+        prisma.trackingTouchpoint.count(),
+        prisma.seoArticle.count(),
+        prisma.user.count(),
+        prisma.auditLog.count(),
+      ]);
 
     const manifest: BackupManifest = {
       backupId,
+      databaseProvider,
       fileName: backupDbFileName,
-      fileSizeBytes: backupBuffer.length,
+      fileSizeBytes: backupSizeBytes,
       sha256,
       restoreVerified,
-      restoreVerificationMethod: 'SQLite-Header-And-SHA256-Roundtrip-Copy',
+      restoreVerificationMethod,
+      backupDurationMs: Date.now() - startedMs,
+      businessFilesCount: businessFilesManifest.length,
+      businessFilesBytes,
+      businessFilesManifest,
+      rpoSummary: 'RPO phụ thuộc chu kỳ sao lưu ngoài tiến trình web (tối đa khoảng thời gian giữa 2 lần snapshot DB + đồng bộ kho file nghiệp vụ).',
       recordCounts: {
         leads,
         designRequests,
         trackingEvents,
+        trackingTouchpoints,
         seoArticles,
         users,
         auditLogs,
@@ -310,7 +506,10 @@ export async function POST(req: Request) {
         action: 'DATABASE_BACKUP_CREATED_AND_VERIFIED',
         targetType: 'DatabaseBackup',
         targetId: backupId,
-        detailsJson: JSON.stringify(manifest),
+        detailsJson: JSON.stringify({
+          ...manifest,
+          businessFilesManifest: undefined,
+        }),
         ipAddress: getClientIp(req),
       },
     });
@@ -318,12 +517,15 @@ export async function POST(req: Request) {
     const storageStats = computeDirectoryStats(resolveStorageDir());
 
     return jsonSuccess({
+      databaseProvider,
       backup: manifest,
       backups: listBackups(),
       storage: {
-        dbSizeBytes: backupBuffer.length,
+        databaseProvider,
+        backupRoot: resolveBackupsRootDir(),
+        dbSizeBytes: backupSizeBytes,
         storageFilesBytes: storageStats.totalBytes,
-        totalUsedBytes: backupBuffer.length + storageStats.totalBytes,
+        totalUsedBytes: backupSizeBytes + storageStats.totalBytes,
         storageFileCount: storageStats.fileCount,
       },
     });
